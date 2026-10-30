@@ -1,0 +1,72 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 1987,
+        "url": "https://github.com/prometheus-community/pyrra/pull/1987",
+        "title": "chore: sync repo files (renamed)",
+        "body": "Propagating changes from prometheus/prometheus default branch.\n\n*Source can be found [here](https://github.com/prometheus/prometheus/blob/main/scripts/sync_repo_files.sh).*\n\nTo check out this branch locally and push changes back:\n```\ngit remote add prombot https://github.com/prombot/prometheus-community_pyrra.git\ngit fetch prombot repo_sync\ngit checkout -b repo_sync prombot/repo_sync\n```",
+        "state": "OPEN",
+        "isDraft": false,
+        "baseRefName": "main",
+        "mergeable": "MERGEABLE",
+        "reviewDecision": null,
+        "autoMergeRequest": null,
+        "labels": {
+          "nodes": [
+            {
+              "name": "dependencies"
+            }
+          ]
+        },
+        "reviewRequests": {
+          "nodes": []
+        },
+        "comments": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "author": {
+                "login": "cursor",
+                "__typename": "Bot"
+              }
+            }
+          ]
+        },
+        "reviews": {
+          "totalCount": 3,
+          "nodes": [
+            {
+              "state": "CHANGES_REQUESTED",
+              "author": {
+                "login": "alice",
+                "__typename": "User"
+              }
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "5e329135a88d191dfefb762303167454c600b108",
+                "authors": {
+                  "nodes": [
+                    {
+                      "user": {
+                        "login": "prombot"
+                      }
+                    }
+                  ]
+                },
+                "statusCheckRollup": {
+                  "state": "PENDING"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

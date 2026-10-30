@@ -1,0 +1,106 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"os/exec"
+	"strings"
+)
+
+type Workspace struct {
+	Host   string   // herdr | orca
+	ID     string   // stable: herdr pane id, Orca "<repoId>::<worktreePath>"
+	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
+	Branch string
+	Path   string
+}
+
+type AgentState string
+
+const (
+	Idle    AgentState = "idle"
+	Working AgentState = "working"
+	Blocked AgentState = "blocked"
+	Unknown AgentState = "unknown"
+)
+
+// ErrBlocked means the agent is waiting at an approval or question; the
+// delivery stays queued and is retried later.
+var ErrBlocked = errors.New("agent is blocked")
+
+type Host interface {
+	Name() string
+	Workspaces(ctx context.Context) ([]Workspace, error)
+	// Watch reports workspace changes until ctx ends: pushed if the host can,
+	// else by polling Workspaces and reporting each result as a Resync.
+	Watch(ctx context.Context, ev Events) error
+	State(ctx context.Context, ws Workspace) (AgentState, error)
+	Deliver(ctx context.Context, ws Workspace, text string) error
+}
+
+// Events receives what a host's Watch observes.
+type Events interface {
+	// Resync replaces every workspace of the host, after a (re)connect or a poll.
+	Resync(host string, list []Workspace)
+	// Upsert reports a workspace that opened or changed (cwd, branch).
+	Upsert(ws Workspace)
+	// Remove reports a closed workspace.
+	Remove(host, id string)
+	// Move reports a workspace that got a new ID, like a herdr pane moved
+	// into another workspace; bindings follow it.
+	Move(host, from string, ws Workspace)
+	// AgentReady reports that the agent in a workspace can take input now,
+	// so a delivery queued while it was busy or blocked can go out.
+	AgentReady(host, id string)
+}
+
+// GitInfo reads the branch and GitHub remotes of the checkout at path. A path
+// that is not a git checkout returns empty values, not an error: an agent in
+// ~/.dotfiles is still a workspace, it just never binds by branch.
+func GitInfo(ctx context.Context, path string) (branch string, repos []string) {
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err == nil {
+		branch = strings.TrimSpace(string(out))
+	}
+	out, err = exec.CommandContext(ctx, "git", "-C", path, "remote", "-v").Output()
+	if err != nil {
+		return branch, nil
+	}
+	for line := range strings.Lines(string(out)) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if r, ok := GitHubRepo(fields[1]); ok && !contains(repos, r) {
+			repos = append(repos, r)
+		}
+	}
+	return branch, repos
+}
+
+// GitHubRepo extracts owner/name from git@github.com:o/r.git,
+// https://github.com/o/r(.git) and ssh://git@github.com/o/r.git.
+func GitHubRepo(url string) (string, bool) {
+	var rest string
+	for _, prefix := range []string{"git@github.com:", "https://github.com/", "ssh://git@github.com/", "http://github.com/"} {
+		if r, ok := strings.CutPrefix(url, prefix); ok {
+			rest = r
+			break
+		}
+	}
+	rest = strings.TrimSuffix(strings.TrimSuffix(rest, "/"), ".git")
+	owner, name, ok := strings.Cut(rest, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", false
+	}
+	return owner + "/" + name, true
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if strings.EqualFold(x, s) {
+			return true
+		}
+	}
+	return false
+}

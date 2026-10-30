@@ -1,0 +1,238 @@
+hosts:
+  herdr:
+    enabled: true
+    bin: herdr
+    socket: ""          # default: $HERDR_SOCKET_PATH, else herdr's own default
+    poll: 15s
+
+delivery:
+  debounce: 30s
+  urgent_debounce: 5s
+  retry: 30s            # blocked agent or failed send
+  prefix: "[kelpie]"
+
+rules:
+  ignore_actors: ["@me", "*[bot]"]
+  allow_bots: ["cursor[bot]", "coderabbitai[bot]", "copilot-pull-request-reviewer[bot]"]
+  forward: []           # empty: every kind
+
+binders:
+  branch: false         # PRs are watched explicitly with kelpie watch
+
+sources:
+  # One watched PR: kelpie watch <pr-url> starts this loop for that PR only,
+  # until it is merged or closed or the pane goes away. gh api graphql, not gh
+  # pr view: gh pr view drops the [bot] suffix and the actor type, so
+  # cursor[bot] would be indistinguishable from a person in the rules.
+  - name: github-pr
+    adapter: cli
+    every: 30s
+    for_each: { subjects: "github:{owner}/{name}#{number}" }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      fragment author on Actor { login __typename }
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            number url title body state isDraft baseRefName mergeable reviewDecision
+            autoMergeRequest { enabledAt }
+            labels(first: 50) { nodes { name } }
+            reviewRequests(first: 50) { nodes { requestedReviewer {
+              ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug }
+            } } }
+            comments(last: 1) { totalCount nodes { author { ...author } } }
+            reviews(last: 1) { totalCount nodes { state author { ...author } } }
+            commits(last: 1) { nodes { commit {
+              oid
+              authors(first: 1) { nodes { user { login } } }
+              statusCheckRollup { state contexts(first: 100) { nodes {
+                __typename ... on CheckRun { status } ... on StatusContext { state }
+              } } }
+            } } }
+          }
+        }
+      }
+    # The title and description are stored to detect edits but never enter a
+    # prompt: summaries carry only states, counts, logins and branch names.
+    map: |
+      def login: if . == null then "" elif .__typename == "Bot" then "\(.login)[bot]" else .login end;
+      .data.repository.pullRequest | .commits.nodes[0].commit as $commit | {
+        url: .url,
+        fields: {
+          number, title, body, state, isDraft, mergeable, reviewDecision,
+          owner: $parent.owner, name: $parent.name,
+          repo: "\($parent.owner)/\($parent.name)",
+          base: .baseRefName,
+          head: $commit.oid,
+          pusher: ($commit.authors.nodes[0].user.login // ""),
+          # Not the rollup state alone: one failed check makes it FAILURE while
+          # others still run, and github-checks would never start.
+          checks: (if any($commit.statusCheckRollup.contexts.nodes[]?; .status != null and .status != "COMPLETED" or .state == "PENDING" or .state == "EXPECTED")
+            then "PENDING" else ($commit.statusCheckRollup.state // "NONE") end),
+          auto_merge: (.autoMergeRequest != null),
+          labels: ([.labels.nodes[].name] | sort),
+          review_requests: ([.reviewRequests.nodes[].requestedReviewer | (.login // .slug)] | sort),
+          comments: .comments.totalCount,
+          last_commenter: (.comments.nodes[0].author | login),
+          reviews: .reviews.totalCount,
+          last_review: { state: (.reviews.nodes[0].state // ""), author: (.reviews.nodes[0].author | login) }
+        },
+        fetch: ["gh", "pr", "view", (.number | tostring), "-R", "\($parent.owner)/\($parent.name)", "--comments"]
+      }
+    # Checks transitions live in github-checks, which this source starts.
+    transitions:
+      # Count reviews, not reviewDecision: a second "changes requested" or a
+      # comment-only review (also every reply in a review thread) leaves the
+      # decision unchanged.
+      - field: reviews
+        increased: true
+        kind: review.submitted
+        actor: .last_review.author
+        summary: '"\(.last_review.state | ascii_downcase | gsub("_"; " ")) by \(.last_review.author)"'
+      - field: comments
+        increased: true
+        kind: comment.added
+        actor: .last_commenter
+        summary: '"\(.comments - $old.comments) new, latest by \(.last_commenter)"'
+      - field: reviewDecision
+        changed: true
+        kind: review.decision
+        summary: '"review decision is now \(.reviewDecision // "none" | ascii_downcase | gsub("_"; " "))"'
+      - field: review_requests
+        changed: true
+        kind: review.requested
+        summary: '(.review_requests - $old.review_requests) as $added | if ($added | length) > 0 then "review requested from \($added | join(", "))" else "review requests now: \(.review_requests | join(", ") | if . == "" then "none" else . end)" end'
+      # Your own pushes (the agent's, or yours from another machine) are
+      # dropped by ignore_actors @me like everything else you do.
+      - field: head
+        changed: true
+        kind: commits.pushed
+        actor: .pusher
+        summary: '"new commits pushed by \(.pusher), head \(.head[:7])"'
+        fetch: '["gh", "pr", "view", (.number | tostring), "-R", .repo, "--json", "commits"]'
+      - field: title
+        changed: true
+        kind: title.changed
+        summary: '"title edited"'
+        fetch: '["gh", "pr", "view", (.number | tostring), "-R", .repo, "--json", "title"]'
+      - field: body
+        changed: true
+        kind: description.changed
+        summary: '"description edited"'
+        fetch: '["gh", "pr", "view", (.number | tostring), "-R", .repo, "--json", "body"]'
+      - field: base
+        changed: true
+        kind: base.changed
+        summary: '"base branch changed from \($old.base) to \(.base)"'
+      - field: labels
+        changed: true
+        kind: labels.changed
+        summary: '"labels now: \(.labels | join(", ") | if . == "" then "none" else . end)"'
+      - field: isDraft
+        to: false
+        kind: pr.ready
+        summary: '"marked ready for review"'
+      - field: isDraft
+        to: true
+        kind: pr.draft
+        summary: '"converted to draft"'
+      - field: auto_merge
+        changed: true
+        kind: automerge.changed
+        summary: 'if .auto_merge then "auto-merge enabled" else "auto-merge disabled" end'
+      - field: mergeable
+        to: CONFLICTING
+        ignore: [UNKNOWN]
+        kind: merge.conflict
+        summary: '"merge conflict with \(.base)"'
+      - field: state
+        to: MERGED
+        kind: state.merged
+        urgent: true
+        terminal: true
+        summary: '"merged; kelpie stops watching"'
+      - field: state
+        to: CLOSED
+        kind: state.closed
+        terminal: true
+        summary: '"closed without merging; kelpie stops watching"'
+
+  # What gh pr checks --watch does, as a source: poll one PR every few seconds
+  # while its checks run, bucket each check like gh and keep only the newest
+  # of re-runs, so a check that failed and then passed on re-run is not
+  # reported as failed. GraphQL rather than gh pr checks --json, which lacks
+  # isRequired. Started while github-pr sees checks PENDING; CI that starts
+  # and finishes between two github-pr polls is never seen and reports nothing.
+  #
+  # Only required checks decide pass or fail. Optional failures, such as a DCO
+  # check waiting for a sign-off, ride along in the final message for the
+  # agent to pass on. A repo without required checks treats all as required.
+  - name: github-checks
+    adapter: cli
+    every: 15s
+    for_each: { source: github-pr, while: { field: checks, equals: PENDING } }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+              __typename
+              ... on CheckRun {
+                name status conclusion startedAt
+                isRequired(pullRequestNumber: $number)
+                checkSuite { workflowRun { workflow { name } } }
+              }
+              ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
+            } } } } } }
+          }
+        }
+      }
+    map: |
+      def bucket:
+        if .__typename == "StatusContext" then {SUCCESS: "pass", ERROR: "fail", FAILURE: "fail"}[.state] // "pending"
+        elif .status != "COMPLETED" then "pending"
+        else {SUCCESS: "pass", NEUTRAL: "pass", SKIPPED: "skip", CANCELLED: "cancel"}[.conclusion] // "fail" end;
+      [.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | {
+        key: [.checkSuite.workflowRun.workflow.name, (.name // .context)],
+        at: (.startedAt // .createdAt // ""),
+        name: ((.name // .context) + if .conclusion == "ACTION_REQUIRED" then " (action required)" else "" end),
+        required: .isRequired,
+        bucket: bucket
+      }] | group_by(.key) | map(max_by(.at))
+      | (any(.[]; .required) | not) as $all
+      | map(select(.required or $all)) as $req
+      | ([.[] | select(.bucket == "pending")] | length) as $pending
+      | [$req[] | select(.bucket == "fail") | .name] as $failed
+      | { fields: {
+          number: $parent.number, repo: $parent.repo,
+          pending: $pending,
+          failed: ($failed | length),
+          failed_checks: $failed,
+          # Counts only while CI runs, so the last failure, arriving with the
+          # end of CI, is reported once, by the final checks.failed.
+          failed_early: (if $pending > 0 then ($failed | length) else 0 end),
+          passed: ([$req[] | select(.bucket == "pass")] | length),
+          optional_failed: (if $all then [] else [.[] | select((.required | not) and .bucket == "fail") | .name] end),
+          checks: (if $pending > 0 then "PENDING" elif ($failed | length) > 0 then "FAILURE" else "SUCCESS" end)
+      } }
+    transitions:
+      # Fires on the first required failure while others still run, like
+      # --fail-fast, so the agent can start on it early.
+      - field: failed_early
+        increased: true
+        kind: checks.failed
+        urgent: true
+        summary: '"\(.failed) failed (\(.pending) still running): \(.failed_checks[:5] | join(", "))"'
+        fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+      - field: checks
+        to: FAILURE
+        kind: checks.failed
+        urgent: true
+        summary: '"CI finished, \(.failed) required failed: \(.failed_checks[:5] | join(", "))\(if (.optional_failed | length) > 0 then "; optional failing: \(.optional_failed[:5] | join(", "))" else "" end)"'
+        fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+      - field: checks
+        to: SUCCESS
+        kind: checks.passed
+        summary: '"required checks passed (\(.passed))\(if (.optional_failed | length) > 0 then "; optional failing: \(.optional_failed[:5] | join(", "))" else "" end)"'
+        fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
