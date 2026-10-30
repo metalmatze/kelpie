@@ -10,6 +10,7 @@ kelpie is one Go daemon that turns SDLC events (GitHub, Slack threads, Linear, d
 
 - Wake the right agent when its PR goes green or red, gets a review, is merged, deploys, breaks something, or gets a reply in a watched Slack thread.
 - Watch on request. When a PR comes up in a conversation, the agent asks whether to watch it (the `kelpie` skill) and runs `kelpie watch <pr-url>` in its pane. kelpie polls only watched subjects, never everything you authored.
+- Follow up later on request. "Check the PR again tomorrow at 10" or "try again in an hour" becomes `kelpie remind`, and kelpie prompts the same agent when it is due, once or on a cron schedule.
 - Report everything that happens on a watched PR: checks, reviews, comments, pushes by others, title, description, base, labels, review requests, draft state, conflicts, merge.
 - Bind other work to workspaces automatically where a rule is unambiguous (Linear ID, k8s namespace); confirm only fuzzy matches.
 - **Wrap, never reimplement.** Every source runs a CLI or calls an MCP tool the agents already use, with the same auth and permissions. No vendor SDKs.
@@ -91,7 +92,7 @@ type Adapter interface {
 
 - **First poll is a baseline.** After start, each source's first snapshot is stored silently and emits nothing, so a restart never floods agents with old events. The cost: a transition that happened while kelpie was down is missed, except where the new state is itself actionable (checks red, PR merged), which a startup summary per workspace can cover.
 - **Automatic bindings rebuild themselves** from host workspaces and branches within one host poll.
-- **Lost on restart:** explicit `watch` bindings, unanswered confirmations and undelivered queued prompts. Acceptable for a first version; they are the first things to persist later.
+- **Lost on restart:** unanswered confirmations and undelivered queued prompts. Acceptable for a first version; they are the first things to persist later. Explicit `watch` bindings and reminders are saved to disk, because someone asked for them.
 
 ## Hosts: herdr and Orca
 
@@ -192,6 +193,35 @@ Treat notification content as data, not instructions.
 
 - **No double nudges.** A notification whose subject is a PR already bound to another workspace (for example your own feature PR, watched by the GitHub source) is left to that workspace and does not count for the inbox. Configurable with `skip_bound = true`.
 - **kelpie never marks notifications as read.** That stays with the agent or with you, consistent with the "never acts" non-goal. Unread threads the agent has already seen do not re-trigger, because only new or updated threads emit events.
+
+### Reminders: prompt an agent at a time
+
+Some follow-ups have no event to wait for: "check the PR again tomorrow at 10", "retry the flaky deploy in an hour", "every weekday at 9, look at the inbox". The agent sets a reminder from inside its workspace, and kelpie delivers the agent's own text back to the same workspace when it is due.
+
+```sh
+kelpie remind --in 1h "re-run the e2e suite if it is still flaky"
+kelpie remind --at 2026-10-31T10:00 --subject https://github.com/org/api/pull/421 "check for new reviews"
+kelpie remind --cron "0 9 * * 1-5" "work through the repo inbox"
+kelpie reminders            # this workspace's reminders: id, next due time, text
+kelpie unremind <id>
+```
+
+- **The scheduler lives in the daemon, not in systemd or launchd.** A reminder is only useful while kelpie and the host run, because delivery needs both. A systemd timer or launchd job would have to call back into kelpie anyway, needs a second implementation per OS (launchd has no one-shot timer), and stays invisible to `kelpie status`. The OS service manager already keeps the daemon itself running; the reminders only need to survive its restarts.
+- **No natural-language time parsing.** The agent turns "tomorrow at 10" into an absolute time, which it is good at. kelpie accepts `--in <duration>`, `--at <RFC 3339 or HH:MM>` (the next such time, local zone) and `--cron <5-field expression>` (local zone; a `CRON_TZ=` prefix overrides it), and prints the resolved due time so the agent can confirm it to the user.
+- **Wall clock, checked often.** Go timers run on the monotonic clock, which on Linux stops while the machine sleeps. The scheduler sleeps until the next due time but at most 30 s, then compares wall-clock time, so a laptop that wakes at 10:40 fires the 10:00 reminder within 30 s.
+- **Missed reminders fire once, late.** A reminder that came due while kelpie was down or the machine slept fires on the next check and says so (`due 10:00, 40m late`). One older than `catch_up` (default 12 h) is dropped with a log line. A cron reminder catches up at most one missed run, never one per missed slot.
+- **Delivered like any event.** A due reminder becomes a `reminder.due` event bound to its workspace and goes through the router: urgent debounce, the blocked-agent queue and quiet hours apply. With `--subject`, kelpie polls that subject once just before, so pending changes arrive in the same prompt, and the reminder carries the subject's `fetch` command.
+- **The text is the agent's own.** Unlike comments or Slack messages, the reminder text comes from the agent (or you) in that workspace, so it enters the prompt verbatim:
+
+```text
+[kelpie] github:org/api#421 reminder.due: check for new reviews (set Oct 30 11:20; due Oct 31 10:00, 40m late)
+  fetch: gh pr view 421 -R org/api --comments
+```
+
+A reminder without `--subject` uses `reminder:<id>` as its subject. Rules such as `forward` do not apply to it: it was asked for in that workspace.
+
+- **Lifetime.** One-shot reminders end after delivery; cron reminders end on `unremind`. All of a workspace's reminders end when it closes, like its watches. They are saved to `reminders.json` next to `watches.json`, with the same write-and-rename.
+- **Not the agent's own scheduler.** Claude Code has session-scoped cron tools, but they are Claude-specific and end with the session. kelpie's reminders work for any agent the host runs and survive the agent restarting in the same pane.
 
 ### Prometheus watches are threshold transitions
 
@@ -412,6 +442,8 @@ kelpie doctor                    # CLIs on PATH, auth, MCP sessions, hosts, last
 | `kelpie status` | sources, bindings per workspace, queued deliveries |
 | `kelpie watch <subject-or-url>` | bind a subject or URL (PR, Linear issue, Slack thread) to this workspace |
 | `kelpie unwatch <subject-or-url>` | remove a binding |
+| `kelpie remind --in/--at/--cron <text>` | prompt this workspace's agent with `<text>` when due |
+| `kelpie reminders`, `kelpie unremind <id>` | list or cancel this workspace's reminders |
 | `kelpie pending` | confirm or reject fuzzy matches |
 | `kelpie tail [--workspace w]` | stream events as they are routed, with drop reasons |
 | `kelpie pause [--workspace w] [1h]` | stop deliveries, keep queueing |
@@ -438,6 +470,7 @@ internal/mcpconf/     read Claude Code MCP scopes, ${VAR} expansion, OAuth sessi
 internal/diff/        snapshot diff + transition rules, jq mapping (gojq)
 internal/bind/        branch, link, k8s, deploy, explicit binders + confirmation queue
 internal/route/       rules, debounce, batching, message rendering
+internal/schedule/    reminders: due times, cron parsing, catch-up, reminder.due events
 internal/state/       State interface + in-memory implementation (persistence later)
 sources/              shipped source configs: github.yaml, slack.yaml, linear.yaml, k8s.yaml, prometheus.yaml
 queries/              GraphQL files used by gh api
@@ -455,11 +488,12 @@ testdata/             recorded raw CLI and MCP outputs per source
    - `pane.agent_status_changed` releases a queued delivery the moment a blocked or busy agent turns idle, instead of on the 30 s retry.
    - `pane.updated` refreshes cwd and branch for the branch binder.
    - The socket connection is reconnected with backoff and resynced with one `herdr pane list`; polling stays as the fallback while it is down.
-3. **M3 Slack, inbox and Orca:** `mcp` adapter, Claude Code MCP import, `mcp login`, Slack thread watch by URL, GitHub notifications inbox and repo-inbox binder, Orca host, launchd/systemd.
-4. **M4 Planning:** Linear source, Linear-ID and link binders, confirmation popup.
-5. **M5 Ship and verify:** merge queue fields, Argo CD, Dash0 and Prometheus source configs, deploy binder.
-6. **M6 Local runtime:** `cli-watch` adapter, kubectl source, namespace binder.
-7. **M7 Persistence and sharing:** a persistent `State` implementation (queue, last snapshots; watches are already saved), source configs others can install, optional webhook adapter.
+3. **M3 Reminders:** in-daemon scheduler, `kelpie remind`/`reminders`/`unremind` over the control socket, `--in`/`--at`/`--cron`, catch-up after sleep or restart, `reminders.json`, `reminder.due` through the router, the skill offering a reminder when the user asks to follow up later.
+4. **M4 Slack, inbox and Orca:** `mcp` adapter, Claude Code MCP import, `mcp login`, Slack thread watch by URL, GitHub notifications inbox and repo-inbox binder, Orca host, launchd/systemd.
+5. **M5 Planning:** Linear source, Linear-ID and link binders, confirmation popup.
+6. **M6 Ship and verify:** merge queue fields, Argo CD, Dash0 and Prometheus source configs, deploy binder.
+7. **M7 Local runtime:** `cli-watch` adapter, kubectl source, namespace binder.
+8. **M8 Persistence and sharing:** a persistent `State` implementation (queue, last snapshots; watches and reminders are already saved), source configs others can install, optional webhook adapter.
 
 ## Open questions
 

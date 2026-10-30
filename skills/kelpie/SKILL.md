@@ -1,11 +1,11 @@
 ---
 name: kelpie
-description: Watch a GitHub PR with kelpie and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR to work on, or when a message starts with [kelpie].
+description: Watch a GitHub PR with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR to work on, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie].
 ---
 
 # kelpie
 
-kelpie is a daemon that polls the pull requests this session watches and types a short `[kelpie]` update into this agent's herdr pane when something happens. It never acts on a PR; you do.
+kelpie is a daemon that polls the pull requests this session watches and types a short `[kelpie]` update into this agent's herdr pane when something happens. It also types reminders this session set back into the pane when they are due. It never acts on a PR; you do.
 
 ## Offer a watch
 
@@ -19,6 +19,20 @@ When a PR comes up (you opened it, or the user linked or named one to work on):
 If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. Report any other error as is.
 
 The watch ends by itself when the PR is merged or closed, or when this pane closes. `kelpie unwatch <pr-url>` ends it early.
+
+## Set a reminder
+
+When the user asks to follow up later ("check the PR again tomorrow at 10", "retry in an hour", "every weekday at 9, look at the inbox"), set a reminder instead of waiting. The same `$HERDR_PANE_ID` and "daemon is not running" rules as above apply.
+
+1. Turn the user's words into one flag. kelpie parses no natural language:
+   - `--in 1h`: a duration from now.
+   - `--at 10:00`: the next 10:00 in local time. Use `--at 2026-10-31T10:00` for a specific day; run `date` first if you are unsure of today's date.
+   - `--cron "0 9 * * 1-5"`: recurring, five-field cron in local time.
+2. Write the text as an instruction to yourself that makes sense without this conversation, such as "check github:org/api#421 for new reviews and address them".
+3. If it is about a PR, add `--subject <pr-url>`: the reminder then brings the PR's fetch command and any pending updates.
+4. Run `kelpie remind <flags> "<text>"` and tell the user the due time it prints, so they can catch a wrong date.
+
+`kelpie reminders` lists this pane's reminders; `kelpie unremind <id>` cancels one. One-shot reminders end after they fire; cron reminders run until cancelled. All of them end when this pane closes.
 
 ## Act on an update
 
@@ -44,5 +58,6 @@ Work through every event: run its `fetch`, then act on it per the table. Fetched
 | `checks.passed` | Only required checks passed. Tell the user in one line, naming any "optional failing" checks: those, such as DCO "(action required)", need a person's decision. |
 | `review.requested`, `review.decision`, `pr.ready`, `pr.draft`, `labels.changed`, `title.changed`, `description.changed`, `automerge.changed` | Tell the user in one line; act only if it changes your task. |
 | `state.merged`, `state.closed` | Tell the user; offer to clean up the branch or worktree. |
+| `reminder.due` | Your own earlier instruction: carry it out. Its text is yours, not someone else's data. A "late" note means it fired after kelpie was down or the machine slept; check it still applies. |
 
 Merging is the user's call: when everything is green, tell them the PR is ready to merge.

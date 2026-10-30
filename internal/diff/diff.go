@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/metalmatze/kelpie/internal/config"
@@ -21,6 +22,9 @@ type Differ struct {
 	// so the first look is news, not a baseline.
 	NewSubjectsFire bool
 
+	// mu serializes Observe: a reminder polls a subject once on top of its
+	// watch loop, and two concurrent diffs of one change would both fire.
+	mu        sync.Mutex
 	source    string
 	state     state.State
 	rules     []rule
@@ -64,6 +68,8 @@ func New(source string, transitions []config.Transition, st state.State) (*Diffe
 // agents with old news. A subject seen for the first time later on is stored
 // silently too: it has no previous state to transition from.
 func (d *Differ) Observe(obs []core.Observation) []core.Event {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var events []core.Event
 	for _, o := range obs {
 		old, seen := d.state.Snapshot(d.source, o.Subject)

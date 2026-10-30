@@ -1,5 +1,5 @@
-// Package control is the daemon's local API: kelpie watch, unwatch and status
-// talk to the running daemon over a unix socket. A TUI would be another client.
+// Package control is the daemon's local API: kelpie watch, unwatch, status
+// and the reminder commands talk to the running daemon over a unix socket. A TUI would be another client.
 package control
 
 import (
@@ -45,13 +45,25 @@ type WatchResponse struct {
 }
 
 type Status struct {
-	Watches []core.Binding `json:"watches"`
-	Queued  map[string]int `json:"queued,omitzero"` // undelivered events per workspace
+	Watches   []core.Binding  `json:"watches"`
+	Reminders []core.Reminder `json:"reminders,omitzero"`
+	Queued    map[string]int  `json:"queued,omitzero"` // undelivered events per workspace
+}
+
+// RemindRequest carries either Due (one-shot) or Cron.
+type RemindRequest struct {
+	Workspace string       `json:"workspace"`
+	Text      string       `json:"text"`
+	Subject   core.Subject `json:"subject,omitzero"`
+	Due       time.Time    `json:"due,omitzero"`
+	Cron      string       `json:"cron,omitzero"`
 }
 
 type Handler interface {
 	Watch(ctx context.Context, req WatchRequest) (WatchResponse, error)
 	Unwatch(ctx context.Context, subject core.Subject) error
+	Remind(ctx context.Context, req RemindRequest) (core.Reminder, error)
+	Unremind(ctx context.Context, id string) error
 	Status(ctx context.Context) Status
 }
 
@@ -92,6 +104,23 @@ func Serve(ctx context.Context, path string, h Handler) error {
 			return
 		}
 		reply(w, struct{}{}, h.Unwatch(r.Context(), req.Subject))
+	})
+	mux.HandleFunc("POST /remind", func(w http.ResponseWriter, r *http.Request) {
+		var req RemindRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		resp, err := h.Remind(r.Context(), req)
+		reply(w, resp, err)
+	})
+	mux.HandleFunc("POST /unremind", func(w http.ResponseWriter, r *http.Request) {
+		var req core.Reminder
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		reply(w, struct{}{}, h.Unremind(r.Context(), req.ID))
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, h.Status(r.Context()), nil)
@@ -144,6 +173,15 @@ func (c *Client) Watch(ctx context.Context, req WatchRequest) (WatchResponse, er
 
 func (c *Client) Unwatch(ctx context.Context, subject core.Subject) error {
 	return c.do(ctx, http.MethodPost, "/unwatch", WatchRequest{Subject: subject}, nil)
+}
+
+func (c *Client) Remind(ctx context.Context, req RemindRequest) (core.Reminder, error) {
+	var r core.Reminder
+	return r, c.do(ctx, http.MethodPost, "/remind", req, &r)
+}
+
+func (c *Client) Unremind(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/unremind", core.Reminder{ID: id}, nil)
 }
 
 func (c *Client) Status(ctx context.Context) (Status, error) {

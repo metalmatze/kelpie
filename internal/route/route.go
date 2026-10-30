@@ -53,11 +53,23 @@ func New(ctx context.Context, d config.Delivery, rules Rules, b *bind.Binder, ho
 
 func (r *Router) Route(ev core.Event) {
 	log := slog.With("subject", ev.Subject, "kind", ev.Kind)
-	if reason, drop := r.rules.Drop(ev); drop {
+	// Rules filter what sources report; an event aimed at a workspace was
+	// asked for there, so forward lists must not swallow it.
+	if reason, drop := r.rules.Drop(ev); drop && ev.Workspace == "" {
 		log.Info("drop", "reason", reason, "actor", ev.Actor)
 		return
 	}
-	ws, bd, isNew, ok := r.binder.Resolve(ev)
+	var (
+		ws    host.Workspace
+		bd    core.Binding
+		isNew bool
+		ok    bool
+	)
+	if ev.Workspace != "" {
+		ws, ok = r.binder.Workspace(ev.Workspace)
+	} else {
+		ws, bd, isNew, ok = r.binder.Resolve(ev)
+	}
 	if !ok {
 		log.Info("drop", "reason", "no workspace", "summary", ev.Summary)
 		return

@@ -11,6 +11,9 @@ delivery:
   retry: 30s            # blocked agent or failed send
   prefix: "[kelpie]"
 
+reminders:
+  catch_up: 12h         # a reminder missed while kelpie was down or asleep fires late up to this, else is skipped
+
 rules:
   ignore_actors: ["@me", "*[bot]"]
   allow_bots: ["cursor[bot]", "coderabbitai[bot]", "copilot-pull-request-reviewer[bot]"]

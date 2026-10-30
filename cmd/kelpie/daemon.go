@@ -21,6 +21,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/host"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/route"
+	"github.com/metalmatze/kelpie/internal/schedule"
 	"github.com/metalmatze/kelpie/internal/state"
 )
 
@@ -33,6 +34,7 @@ type daemon struct {
 	ctx     context.Context
 	binder  *bind.Binder
 	router  *route.Router
+	sched   *schedule.Scheduler
 	hosts   []host.Host
 	runners map[string]*runner
 
@@ -79,6 +81,13 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	if err := d.buildRunners(cfg.Sources, st); err != nil {
 		return err
 	}
+	// Before the first workspace refresh, which ends the reminders of panes
+	// that closed while kelpie was down.
+	d.sched, err = schedule.New(filepath.Join(control.StateDir(), "reminders.json"), cfg.Reminders.CatchUp.Duration,
+		func(r core.Reminder, late time.Duration) { go d.fireReminder(r, late) })
+	if err != nil {
+		return err
+	}
 
 	// Workspaces first: a watch whose pane closed while kelpie was down ends
 	// here instead of polling for nobody.
@@ -93,6 +102,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 			slog.Error("control socket failed; kelpie watch will not work", "err", err)
 		}
 	})
+	wg.Go(func() { d.sched.Run(ctx) })
 	for _, h := range d.hosts {
 		wg.Go(func() {
 			err := h.Watch(ctx, d)
@@ -219,29 +229,12 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 	}
 	// One poll up front, so a typo or a PR you cannot read fails here, at the
 	// command, instead of as a warning in the daemon log every tick.
-	matched := false
-	for _, r := range d.runners {
-		if r.pattern == nil {
-			continue
-		}
-		fields, ok := r.pattern.Match(subject)
-		if !ok {
-			continue
-		}
-		matched = true
-		if _, _, err := r.a.Once(ctx, &core.Observation{Subject: subject, Fields: fields}); err != nil {
-			return control.WatchResponse{}, err
-		}
+	if _, err := d.pollSubject(ctx, subject, false); err != nil {
+		return control.WatchResponse{}, err
 	}
-	if !matched {
-		return control.WatchResponse{}, fmt.Errorf("no source watches subjects like %s", subject)
-	}
-	ws, ok := d.binder.Workspace(req.Workspace)
-	if !ok {
-		d.refreshWorkspaces() // a pane opened since the last host poll
-		if ws, ok = d.binder.Workspace(req.Workspace); !ok {
-			return control.WatchResponse{}, fmt.Errorf("workspace %s is not known to any host", req.Workspace)
-		}
+	ws, err := d.workspace(req.Workspace)
+	if err != nil {
+		return control.WatchResponse{}, err
 	}
 	resp := control.WatchResponse{Subject: subject, Workspace: ws.ID}
 	if prev, ok := d.binder.Binding(subject); ok && prev.Workspace != ws.ID {
@@ -251,6 +244,124 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 	d.startWatches(subject)
 	slog.Info("watch", "subject", subject, "workspace", ws.ID, "moved_from", resp.Moved)
 	return resp, nil
+}
+
+// pollSubject runs every for_each.subjects source that handles subject once
+// and returns the fetch command of the first observation. With observe, the
+// observations go through the diff like a tick of the watch loop, so pending
+// changes are routed now.
+func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe bool) ([]string, error) {
+	matched := false
+	var fetch []string
+	for _, r := range d.runners {
+		if r.pattern == nil {
+			continue
+		}
+		fields, ok := r.pattern.Match(subject)
+		if !ok {
+			continue
+		}
+		matched = true
+		_, obs, err := r.a.Once(ctx, &core.Observation{Subject: subject, Fields: fields})
+		if err != nil {
+			return nil, err
+		}
+		if observe {
+			d.observer(r)(obs)
+		}
+		if fetch == nil && len(obs) > 0 {
+			fetch = obs[0].Fetch
+		}
+	}
+	if !matched {
+		return nil, fmt.Errorf("no source watches subjects like %s", subject)
+	}
+	return fetch, nil
+}
+
+func (d *daemon) workspace(id string) (host.Workspace, error) {
+	if ws, ok := d.binder.Workspace(id); ok {
+		return ws, nil
+	}
+	d.refreshWorkspaces() // a pane opened since the last host poll
+	if ws, ok := d.binder.Workspace(id); ok {
+		return ws, nil
+	}
+	return host.Workspace{}, fmt.Errorf("workspace %s is not known to any host", id)
+}
+
+func (d *daemon) Remind(ctx context.Context, req control.RemindRequest) (core.Reminder, error) {
+	ws, err := d.workspace(req.Workspace)
+	if err != nil {
+		return core.Reminder{}, err
+	}
+	r := core.Reminder{Workspace: ws.ID, Text: strings.Join(strings.Fields(req.Text), " "), Due: req.Due, Cron: req.Cron}
+	if req.Subject != "" {
+		if r.Subject, err = core.ParseSubject(string(req.Subject)); err != nil {
+			return core.Reminder{}, err
+		}
+		if _, err := d.pollSubject(ctx, r.Subject, false); err != nil {
+			return core.Reminder{}, err
+		}
+	}
+	if r, err = d.sched.Add(r); err != nil {
+		return core.Reminder{}, err
+	}
+	slog.Info("remind", "id", r.ID, "workspace", r.Workspace, "due", r.Due, "cron", r.Cron, "subject", r.Subject)
+	return r, nil
+}
+
+func (d *daemon) Unremind(_ context.Context, id string) error {
+	if err := d.sched.Remove(id); err != nil {
+		return err
+	}
+	slog.Info("unremind", "id", id)
+	return nil
+}
+
+// fireReminder routes a due reminder to its workspace. With a subject, that
+// subject is polled first, so its pending changes go out in the same prompt.
+func (d *daemon) fireReminder(r core.Reminder, late time.Duration) {
+	ev := core.Event{
+		ID:        fmt.Sprintf("%s@%d", r.ID, r.Due.Unix()),
+		Kind:      "reminder.due",
+		Subject:   r.Subject,
+		At:        time.Now(),
+		Urgent:    true,
+		Workspace: r.Workspace,
+	}
+	if r.Subject == "" {
+		ev.Subject = core.Subject("reminder:" + r.ID)
+	} else {
+		ctx, cancel := context.WithTimeout(d.ctx, time.Minute)
+		fetch, err := d.pollSubject(ctx, r.Subject, true)
+		cancel()
+		if err != nil {
+			slog.Warn("reminder: polling its subject failed", "id", r.ID, "subject", r.Subject, "err", err)
+		}
+		ev.Fetch = fetch
+	}
+	var notes []string
+	if r.Cron != "" {
+		notes = append(notes, "every "+r.Cron)
+	} else {
+		notes = append(notes, "set "+r.Created.Local().Format("Jan 2 15:04"))
+	}
+	if late >= time.Minute {
+		notes = append(notes, fmt.Sprintf("due %s, %s late", r.Due.Local().Format("Jan 2 15:04"), shortDuration(late)))
+	}
+	ev.Summary = fmt.Sprintf("%s (%s)", r.Text, strings.Join(notes, "; "))
+	d.router.Route(ev)
+}
+
+// shortDuration rounds to minutes and drops zero units: 1h, 1h40m, 40m.
+func shortDuration(d time.Duration) string {
+	s := d.Round(time.Minute).String()
+	s = strings.TrimSuffix(s, "0s")
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
 
 func (d *daemon) Unwatch(_ context.Context, subject core.Subject) error {
@@ -267,7 +378,7 @@ func (d *daemon) Unwatch(_ context.Context, subject core.Subject) error {
 }
 
 func (d *daemon) Status(context.Context) control.Status {
-	return control.Status{Watches: d.binder.Bindings(), Queued: d.router.Queued()}
+	return control.Status{Watches: d.binder.Bindings(), Reminders: d.sched.List(""), Queued: d.router.Queued()}
 }
 
 // refreshWorkspaces asks every host for its full list, for startup and for a
@@ -287,6 +398,7 @@ func (d *daemon) refreshWorkspaces() {
 // resyncs every few seconds.
 func (d *daemon) Resync(hostName string, list []host.Workspace) {
 	d.binder.SetWorkspaces(hostName, list)
+	d.sched.Prune(d.alive)
 	ids := make([]string, len(list))
 	for i, ws := range list {
 		ids[i] = ws.ID
@@ -314,11 +426,18 @@ func (d *daemon) Upsert(ws host.Workspace) {
 
 func (d *daemon) Remove(_, id string) {
 	d.binder.Remove(id)
+	d.sched.Prune(d.alive)
 	slog.Info("pane closed", "id", id)
+}
+
+func (d *daemon) alive(workspace string) bool {
+	_, ok := d.binder.Workspace(workspace)
+	return ok
 }
 
 func (d *daemon) Move(_, from string, ws host.Workspace) {
 	d.binder.Move(from, ws)
+	d.sched.Move(from, ws.ID)
 	slog.Info("pane moved", "from", from, "to", ws.ID)
 }
 

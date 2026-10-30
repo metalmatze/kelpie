@@ -32,6 +32,22 @@ type Event struct {
 	Bind                          map[string]string
 	Urgent                        bool
 	Terminal                      bool // merged, Done, resolved: unbind after delivery
+	// Workspace targets the event at one workspace directly, bypassing the
+	// binders. Reminders set it: they belong to the pane that set them,
+	// whether or not their subject is watched.
+	Workspace string
+}
+
+// Reminder prompts a workspace's agent with its own text when due, once or
+// on a cron schedule.
+type Reminder struct {
+	ID        string    `json:"id"`
+	Workspace string    `json:"workspace"`
+	Text      string    `json:"text"`
+	Subject   Subject   `json:"subject,omitzero"`
+	Cron      string    `json:"cron,omitzero"` // empty: one-shot
+	Due       time.Time `json:"due"`
+	Created   time.Time `json:"created"`
 }
 
 type Binding struct {

@@ -8,4 +8,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
-require github.com/itchyny/timefmt-go v0.1.8 // indirect
+require (
+	github.com/itchyny/timefmt-go v0.1.8 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
+)

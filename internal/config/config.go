@@ -17,11 +17,12 @@ import (
 var Default []byte
 
 type Config struct {
-	Hosts    Hosts    `yaml:"hosts"`
-	Delivery Delivery `yaml:"delivery"`
-	Rules    Rules    `yaml:"rules"`
-	Binders  Binders  `yaml:"binders"`
-	Sources  []Source `yaml:"sources"`
+	Hosts     Hosts     `yaml:"hosts"`
+	Delivery  Delivery  `yaml:"delivery"`
+	Reminders Reminders `yaml:"reminders"`
+	Rules     Rules     `yaml:"rules"`
+	Binders   Binders   `yaml:"binders"`
+	Sources   []Source  `yaml:"sources"`
 }
 
 type Hosts struct {
@@ -40,6 +41,12 @@ type Delivery struct {
 	UrgentDebounce Duration `yaml:"urgent_debounce"`
 	Retry          Duration `yaml:"retry"`
 	Prefix         string   `yaml:"prefix"`
+}
+
+type Reminders struct {
+	// CatchUp is how late a reminder may still fire after kelpie was down or
+	// the machine slept. Older ones are skipped.
+	CatchUp Duration `yaml:"catch_up"`
 }
 
 type Rules struct {
@@ -157,6 +164,7 @@ func Parse(data []byte) (*Config, error) {
 			Retry:          Duration{30 * time.Second},
 			Prefix:         "[kelpie]",
 		},
+		Reminders: Reminders{CatchUp: Duration{12 * time.Hour}},
 	}
 	// Unknown keys are errors: a typo like "transition:" would otherwise
 	// silently disable every event of a source.
