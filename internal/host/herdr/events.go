@@ -27,7 +27,15 @@ var paneEvents = []subscription{
 	{Type: "pane.closed"},
 	{Type: "pane.moved"},
 	{Type: "pane.agent_detected"},
+	// Closing a tab or workspace closes its panes without a pane.closed for
+	// each, so these trigger a full resync.
+	{Type: "tab.closed"},
+	{Type: "workspace.closed"},
 }
+
+// errPaneNotFound is herdr rejecting a whole subscription because one of its
+// panes is gone.
+var errPaneNotFound = errors.New("pane_not_found")
 
 type subscription struct {
 	Type   string `json:"type"`
@@ -39,7 +47,7 @@ type subscription struct {
 // and keeps trying to reconnect.
 func (h *Herdr) Watch(ctx context.Context, ev host.Events) error {
 	ids := make(chan []string, 1)
-	go h.followStatus(ctx, ids, ev)
+	go h.followStatus(ctx, ids, ev, func() { h.resync(ctx, ev, ids) })
 	down := false
 	for {
 		err := h.follow(ctx, ev, ids, func() {
@@ -93,7 +101,8 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 			continue
 		}
 		d := msg.Data
-		switch msg.Event {
+		// herdr names some events with dots and most with underscores.
+		switch strings.ReplaceAll(msg.Event, ".", "_") {
 		case "pane_created":
 			ev.Upsert(h.workspace(ctx, d.Pane))
 			h.publishIDs(ids)
@@ -109,6 +118,9 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 			h.publishIDs(ids)
 		case "pane_agent_detected":
 			ev.AgentReady(h.Name(), d.PaneID)
+		case "tab_closed", "workspace_closed":
+			slog.Debug("herdr "+strings.TrimSuffix(msg.Event, "_closed")+" closed, listing panes again", "event", msg.Event)
+			h.resync(ctx, ev, ids)
 		}
 	}
 }
@@ -155,8 +167,9 @@ func (h *Herdr) publishIDs(ch chan []string) {
 // for every pane. herdr takes one subscription per connection and requires a
 // pane ID for this event, so the connection is rebuilt whenever panes come or
 // go. Status events missed while it reconnects only delay a queued delivery
-// until the router's retry.
-func (h *Herdr) followStatus(ctx context.Context, ch <-chan []string, ev host.Events) {
+// until the router's retry. refresh lists the panes again, which publishes a
+// new ID set when one of them is gone.
+func (h *Herdr) followStatus(ctx context.Context, ch <-chan []string, ev host.Events, refresh func()) {
 	stop := func() {}
 	defer func() { stop() }()
 	for {
@@ -167,12 +180,12 @@ func (h *Herdr) followStatus(ctx context.Context, ch <-chan []string, ev host.Ev
 			stop()
 			sctx, cancel := context.WithCancel(ctx)
 			stop = cancel
-			go h.statusLoop(sctx, ids, ev)
+			go h.statusLoop(sctx, ids, ev, refresh)
 		}
 	}
 }
 
-func (h *Herdr) statusLoop(ctx context.Context, ids []string, ev host.Events) {
+func (h *Herdr) statusLoop(ctx context.Context, ids []string, ev host.Events, refresh func()) {
 	if len(ids) == 0 {
 		return
 	}
@@ -189,7 +202,15 @@ func (h *Herdr) statusLoop(ctx context.Context, ids []string, ev host.Events) {
 		if ctx.Err() != nil {
 			return
 		}
-		slog.Debug("herdr status stream lost, reconnecting", "err", err)
+		if errors.Is(err, errPaneNotFound) {
+			// herdr rejects the whole subscription while one pane is gone, so
+			// retrying the same IDs fails forever. A fresh list replaces this
+			// loop with one for the live panes.
+			slog.Info("herdr status subscription names a closed pane, listing panes again", "err", err)
+			refresh()
+		} else {
+			slog.Debug("herdr status stream lost, reconnecting", "err", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -261,6 +282,9 @@ func (h *Herdr) subscribe(ctx context.Context, subs []subscription) (net.Conn, *
 	}
 	if resp.Error != nil {
 		conn.Close()
+		if resp.Error.Code == errPaneNotFound.Error() {
+			return nil, nil, fmt.Errorf("events.subscribe: %w: %s", errPaneNotFound, resp.Error.Message)
+		}
 		return nil, nil, fmt.Errorf("events.subscribe: %s: %s", resp.Error.Code, resp.Error.Message)
 	}
 	if resp.Result.Type != "subscription_started" {
