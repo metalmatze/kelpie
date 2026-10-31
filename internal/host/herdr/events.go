@@ -25,6 +25,9 @@ var paneEvents = []subscription{
 	{Type: "pane.created"},
 	{Type: "pane.updated"},
 	{Type: "pane.closed"},
+	// A pane whose shell exits (exit, ctrl-d) closes with only pane.exited,
+	// and its tab, if that was the last pane, without tab.closed.
+	{Type: "pane.exited"},
 	{Type: "pane.moved"},
 	{Type: "pane.agent_detected"},
 	// Closing a tab or workspace closes its panes without a pane.closed for
@@ -108,7 +111,7 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 			h.publishIDs(ids)
 		case "pane_updated":
 			ev.Upsert(h.workspace(ctx, d.Pane))
-		case "pane_closed":
+		case "pane_closed", "pane_exited":
 			h.forget(d.PaneID)
 			ev.Remove(h.Name(), d.PaneID)
 			h.publishIDs(ids)
