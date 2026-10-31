@@ -213,8 +213,8 @@ func watch(ctx context.Context, subject core.Subject, workspace string) error {
 		return err
 	}
 	fmt.Printf("watching %s; updates go to the agent in pane %s\n", resp.Subject, resp.Workspace)
-	if resp.Moved != "" {
-		fmt.Printf("(moved from pane %s)\n", resp.Moved)
+	if len(resp.Others) > 0 {
+		fmt.Printf("(pane %s watches it too and keeps its own updates)\n", strings.Join(resp.Others, ", "))
 	}
 	return nil
 }
@@ -239,7 +239,8 @@ type UnwatchCmd struct {
 }
 
 type UnwatchSubjectCmd struct {
-	Subject string `arg:"" help:"Subject as kelpie status lists it, like github-inbox:prometheus."`
+	Subject   string `arg:"" help:"Subject as kelpie status lists it, like github-inbox:prometheus."`
+	Workspace string `help:"Pane whose watch to end; other panes keep theirs. Default: this pane." env:"HERDR_PANE_ID"`
 }
 
 func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
@@ -247,11 +248,12 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return unwatch(ctx, subject)
+	return unwatch(ctx, subject, c.Workspace)
 }
 
 type UnwatchGitHubCmd struct {
-	Target string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
+	Target    string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
+	Workspace string `help:"Pane whose watch to end; other panes keep theirs. Default: this pane." env:"HERDR_PANE_ID"`
 }
 
 func (c *UnwatchGitHubCmd) Run(ctx context.Context) error {
@@ -259,14 +261,17 @@ func (c *UnwatchGitHubCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return unwatch(ctx, subject)
+	return unwatch(ctx, subject, c.Workspace)
 }
 
-func unwatch(ctx context.Context, subject core.Subject) error {
-	if err := control.NewClient(control.SocketPath()).Unwatch(ctx, subject); err != nil {
+func unwatch(ctx context.Context, subject core.Subject, workspace string) error {
+	if workspace == "" {
+		return errors.New("not inside a herdr pane; pass --workspace <pane id>")
+	}
+	if err := control.NewClient(control.SocketPath()).Unwatch(ctx, subject, workspace); err != nil {
 		return err
 	}
-	fmt.Println("stopped watching", subject)
+	fmt.Printf("pane %s stopped watching %s\n", workspace, subject)
 	return nil
 }
 

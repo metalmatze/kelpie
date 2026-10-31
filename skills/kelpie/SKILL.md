@@ -12,13 +12,13 @@ kelpie is a daemon that polls the pull requests and notification inboxes this se
 When a PR comes up (you opened it, or the user linked or named one to work on):
 
 1. Check `$HERDR_PANE_ID` is set. kelpie reaches this session only through herdr; without it, tell the user kelpie cannot reach this session and stop.
-2. Run `kelpie status`. If it lists the PR for this pane, it is already watched: stop. If it lists the PR for another pane, say so in the question below: watching moves its updates to this pane.
+2. Run `kelpie status`. If it lists the PR for this pane, it is already watched: stop. Other panes watching the same PR do not matter: each pane gets its own updates.
 3. Ask once with AskUserQuestion: "Watch owner/repo#N with kelpie?", options "Watch" and "Not now". "Not now" holds for this PR for the rest of the conversation; offer again only if the user brings it up.
 4. On "Watch", run `kelpie watch github <pr-url>`. Done when it prints `watching <subject>`.
 
 If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. Report any other error as is.
 
-The watch ends by itself when the PR is merged or closed, or when this pane closes. `kelpie unwatch github <pr-url>` ends it early.
+The watch ends by itself when the PR is merged or closed, or when this pane closes. `kelpie unwatch github <pr-url>` ends it early, for this pane only.
 
 ## Watch notifications
 
@@ -27,7 +27,7 @@ When the user wants this session to follow a repo's or an org's GitHub notificat
 1. Run `kelpie status`. A `github-inbox:owner/repo` or `github-inbox:org` line for this pane means it is already watched: stop.
 2. Run `kelpie watch github <owner/repo>` for a repo, `kelpie watch github <org>` for every repo of an org, or `kelpie watch github` alone for the repo of the current directory. Done when it prints `watching github-inbox:...`.
 
-Only notifications that arrive or are updated after the watch starts count; the unread backlog does not. `kelpie unwatch github <owner/repo or org>` ends the watch; it also ends when this pane closes.
+Only notifications that arrive or are updated after the watch starts count; the unread backlog does not. `kelpie unwatch github <owner/repo or org>` ends this pane's watch; it also ends when this pane closes. Other panes watching the same repo or org keep theirs.
 
 ## Set a reminder
 

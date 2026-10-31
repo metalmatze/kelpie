@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/metalmatze/kelpie/internal/core"
@@ -15,18 +16,18 @@ func TestBranchBinding(t *testing.T) {
 	b.SetWorkspaces("herdr", []host.Workspace{ws, {Host: "herdr", ID: "w2:p1", Repos: []string{"acme/api"}, Branch: "main"}})
 
 	pr := core.Event{Subject: "github:acme/api#421", Bind: map[string]string{"repo": "acme/api", "head_repo": "metalmatze/api", "branch": "fix-auth"}}
-	got, _, isNew, ok := b.Resolve(pr)
-	if !ok || got.ID != "w1:p1" || !isNew {
-		t.Fatalf("first resolve: %v %v %v", got.ID, isNew, ok)
+	got := b.Resolve(pr)
+	if len(got) != 1 || got[0].Workspace.ID != "w1:p1" || !got[0].New {
+		t.Fatalf("first resolve: %+v", got)
 	}
-	if _, _, isNew, ok := b.Resolve(pr); !ok || isNew {
-		t.Fatalf("second resolve should reuse the binding: new=%v ok=%v", isNew, ok)
+	if got := b.Resolve(pr); len(got) != 1 || got[0].New {
+		t.Fatalf("second resolve should reuse the binding: %+v", got)
 	}
 
 	// Checking out another branch moves the PR away from the workspace.
 	ws.Branch = "other"
 	b.SetWorkspaces("herdr", []host.Workspace{ws})
-	if _, _, _, ok := b.Resolve(pr); ok {
+	if got := b.Resolve(pr); got != nil {
 		t.Fatal("bound after branch switch")
 	}
 
@@ -35,7 +36,7 @@ func TestBranchBinding(t *testing.T) {
 		{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"},
 		{Host: "herdr", ID: "w3:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"},
 	})
-	if _, _, _, ok := b.Resolve(pr); ok {
+	if got := b.Resolve(pr); got != nil {
 		t.Fatal("ambiguous match bound")
 	}
 
@@ -43,8 +44,43 @@ func TestBranchBinding(t *testing.T) {
 	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"}})
 	b.Resolve(pr)
 	b.SetWorkspaces("herdr", nil)
-	if _, ok := st.Binding(pr.Subject); ok {
+	if got := st.Bindings(pr.Subject); got != nil {
 		t.Fatal("binding survived its workspace")
+	}
+}
+
+// Several workspaces watch one subject: each is a target, and closing,
+// moving or unbinding one leaves the others alone.
+func TestSeveralWorkspaces(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	ws := func(id string) host.Workspace { return host.Workspace{Host: "herdr", ID: id} }
+	b.SetWorkspaces("herdr", []host.Workspace{ws("w1:p1"), ws("w2:p1"), ws("w3:p1")})
+	inbox := core.Subject("github-inbox:acme/api")
+	for _, id := range []string{"w1:p1", "w2:p1", "w3:p1"} {
+		b.Bind(core.Binding{Subject: inbox, Workspace: id, Via: "explicit"})
+	}
+	b.Bind(core.Binding{Subject: "github:acme/api#421", Workspace: "w1:p1", Via: "explicit"})
+
+	targets := func() []string {
+		var ids []string
+		for _, t := range b.Resolve(core.Event{Subject: inbox}) {
+			ids = append(ids, t.Workspace.ID)
+		}
+		return ids
+	}
+	if got := targets(); !slices.Equal(got, []string{"w1:p1", "w2:p1", "w3:p1"}) {
+		t.Fatalf("targets %v", got)
+	}
+
+	b.Remove("w1:p1")
+	b.Unbind(inbox, "w2:p1")
+	b.Move("w3:p1", ws("w4:p1"))
+	if got := targets(); !slices.Equal(got, []string{"w4:p1"}) {
+		t.Fatalf("after close, unbind and move: targets %v", got)
+	}
+	if got := b.AllBindings(); len(got) != 1 || got[0].Workspace != "w4:p1" {
+		t.Fatalf("bindings %+v", got)
 	}
 }
 

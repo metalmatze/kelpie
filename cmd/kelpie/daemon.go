@@ -92,8 +92,8 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	// Workspaces first: a watch whose pane closed while kelpie was down ends
 	// here instead of polling for nobody.
 	d.refreshWorkspaces()
-	for _, bd := range d.binder.Bindings() {
-		d.startWatches(bd.Subject)
+	for _, bd := range d.binder.AllBindings() {
+		d.startWatches(bd.Subject) // once per subject: the adapter skips running loops
 	}
 
 	var wg sync.WaitGroup
@@ -205,7 +205,8 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 }
 
 // startWatches starts every for_each.subjects source that handles subject,
-// each running for as long as the subject stays bound.
+// each running for as long as some workspace watches it. A subject has one
+// loop no matter how many workspaces watch it.
 func (d *daemon) startWatches(subject core.Subject) {
 	for _, r := range d.runners {
 		if r.pattern == nil {
@@ -216,8 +217,7 @@ func (d *daemon) startWatches(subject core.Subject) {
 			continue
 		}
 		r.a.Watch(d.ctx, core.Observation{Subject: subject, Fields: fields}, d.observer(r), func([]core.Observation, error) bool {
-			_, bound := d.binder.Binding(subject)
-			return bound
+			return len(d.binder.Bindings(subject)) > 0
 		})
 	}
 }
@@ -237,12 +237,17 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 		return control.WatchResponse{}, err
 	}
 	resp := control.WatchResponse{Subject: subject, Workspace: ws.ID}
-	if prev, ok := d.binder.Binding(subject); ok && prev.Workspace != ws.ID {
-		resp.Moved = prev.Workspace
+	for _, bd := range d.binder.Bindings(subject) {
+		if bd.Workspace != ws.ID {
+			resp.Others = append(resp.Others, bd.Workspace)
+		}
 	}
-	d.binder.Bind(core.Binding{Subject: subject, Workspace: ws.ID, Via: "explicit", Since: time.Now()})
+	// Watching again from the same workspace keeps the original time.
+	if _, ok := d.binder.Binding(subject, ws.ID); !ok {
+		d.binder.Bind(core.Binding{Subject: subject, Workspace: ws.ID, Via: "explicit", Since: time.Now()})
+	}
 	d.startWatches(subject)
-	slog.Info("watch", "subject", subject, "workspace", ws.ID, "moved_from", resp.Moved)
+	slog.Info("watch", "subject", subject, "workspace", ws.ID, "others", resp.Others)
 	return resp, nil
 }
 
@@ -364,21 +369,26 @@ func shortDuration(d time.Duration) string {
 	return s
 }
 
-func (d *daemon) Unwatch(_ context.Context, subject core.Subject) error {
-	subject, err := core.ParseSubject(string(subject))
+// Unwatch ends the watch of one workspace. Others watching the subject keep
+// theirs, and its loop runs until the last one ends.
+func (d *daemon) Unwatch(_ context.Context, req control.WatchRequest) error {
+	subject, err := core.ParseSubject(string(req.Subject))
 	if err != nil {
 		return err
 	}
-	if _, ok := d.binder.Binding(subject); !ok {
-		return fmt.Errorf("not watching %s", subject)
+	if req.Workspace == "" {
+		return errors.New("no workspace given")
 	}
-	d.binder.Unbind(subject)
-	slog.Info("unwatch", "subject", subject)
+	if _, ok := d.binder.Binding(subject, req.Workspace); !ok {
+		return fmt.Errorf("pane %s is not watching %s", req.Workspace, subject)
+	}
+	d.binder.Unbind(subject, req.Workspace)
+	slog.Info("unwatch", "subject", subject, "workspace", req.Workspace)
 	return nil
 }
 
 func (d *daemon) Status(context.Context) control.Status {
-	return control.Status{Watches: d.binder.Bindings(), Reminders: d.sched.List(""), Queued: d.router.Queued()}
+	return control.Status{Watches: d.binder.AllBindings(), Reminders: d.sched.List(""), Queued: d.router.Queued()}
 }
 
 // refreshWorkspaces asks every host for its full list, for startup and for a

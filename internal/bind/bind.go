@@ -41,10 +41,10 @@ func (b *Binder) SetWorkspaces(hostName string, list []host.Workspace) {
 	for _, ws := range list {
 		b.workspaces[ws.ID] = ws
 	}
-	for _, bd := range b.state.Bindings() {
+	for _, bd := range b.state.AllBindings() {
 		if _, ok := b.workspaces[bd.Workspace]; !ok {
 			slog.Info("unbind: workspace closed", "subject", bd.Subject, "workspace", bd.Workspace)
-			b.state.DeleteBinding(bd.Subject)
+			b.state.DeleteBinding(bd.Subject, bd.Workspace)
 		}
 	}
 }
@@ -58,15 +58,16 @@ func (b *Binder) Upsert(ws host.Workspace) (prev host.Workspace, existed bool) {
 	return prev, existed
 }
 
-// Remove forgets a closed workspace and ends its bindings.
+// Remove forgets a closed workspace and ends its bindings. Other workspaces
+// watching the same subjects keep theirs.
 func (b *Binder) Remove(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.workspaces, id)
-	for _, bd := range b.state.Bindings() {
+	for _, bd := range b.state.AllBindings() {
 		if bd.Workspace == id {
 			slog.Info("unbind: workspace closed", "subject", bd.Subject, "workspace", id)
-			b.state.DeleteBinding(bd.Subject)
+			b.state.DeleteBinding(bd.Subject, id)
 		}
 	}
 }
@@ -78,8 +79,9 @@ func (b *Binder) Move(from string, ws host.Workspace) {
 	defer b.mu.Unlock()
 	delete(b.workspaces, from)
 	b.workspaces[ws.ID] = ws
-	for _, bd := range b.state.Bindings() {
+	for _, bd := range b.state.AllBindings() {
 		if bd.Workspace == from {
+			b.state.DeleteBinding(bd.Subject, from)
 			bd.Workspace = ws.ID
 			b.state.SetBinding(bd)
 		}
@@ -101,56 +103,73 @@ func (b *Binder) Workspaces() []host.Workspace {
 	})
 }
 
-// Resolve returns the workspace for ev. isNew reports a binding made just now,
-// which the first delivered message mentions so the agent knows why it hears
-// about this subject.
-func (b *Binder) Resolve(ev core.Event) (ws host.Workspace, bd core.Binding, isNew, ok bool) {
+// Target is one workspace an event goes to. New reports a binding made just
+// now, which the first delivered message mentions so the agent knows why it
+// hears about this subject.
+type Target struct {
+	Workspace host.Workspace
+	Binding   core.Binding
+	New       bool
+}
+
+// Resolve returns every workspace that watches ev's subject. Each gets its
+// own delivery.
+func (b *Binder) Resolve(ev core.Event) []Target {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if bd, ok := b.state.Binding(ev.Subject); ok {
+	var targets []Target
+	for _, bd := range b.state.Bindings(ev.Subject) {
 		ws, alive := b.workspaces[bd.Workspace]
 		// A branch binding follows the branch: after a checkout of another
 		// branch the workspace no longer owns this PR.
 		if alive && (bd.Via != "branch" || matchesBranch(ws, ev)) {
-			return ws, bd, false, true
+			targets = append(targets, Target{Workspace: ws, Binding: bd})
+			continue
 		}
-		b.state.DeleteBinding(ev.Subject)
+		b.state.DeleteBinding(ev.Subject, bd.Workspace)
+	}
+	if len(targets) > 0 || !b.branch {
+		return targets
 	}
 
-	if b.branch {
-		var candidates []host.Workspace
-		for _, ws := range b.workspaces {
-			if matchesBranch(ws, ev) {
-				candidates = append(candidates, ws)
-			}
-		}
-		switch len(candidates) {
-		case 1:
-			bd := core.Binding{Subject: ev.Subject, Workspace: candidates[0].ID, Via: "branch", Since: b.now()}
-			b.state.SetBinding(bd)
-			return candidates[0], bd, true, true
-		case 0:
-		default:
-			// TODO: confirmation queue. Until then, guessing would wake the wrong agent.
-			ids := make([]string, len(candidates))
-			for i, c := range candidates {
-				ids[i] = c.ID
-			}
-			slices.Sort(ids)
-			slog.Warn("ambiguous branch binding, not delivering", "subject", ev.Subject, "workspaces", ids)
+	var candidates []host.Workspace
+	for _, ws := range b.workspaces {
+		if matchesBranch(ws, ev) {
+			candidates = append(candidates, ws)
 		}
 	}
-	return host.Workspace{}, core.Binding{}, false, false
+	switch len(candidates) {
+	case 1:
+		bd := core.Binding{Subject: ev.Subject, Workspace: candidates[0].ID, Via: "branch", Since: b.now()}
+		b.state.SetBinding(bd)
+		return []Target{{Workspace: candidates[0], Binding: bd, New: true}}
+	case 0:
+	default:
+		// TODO: confirmation queue. Until then, guessing would wake the wrong agent.
+		ids := make([]string, len(candidates))
+		for i, c := range candidates {
+			ids[i] = c.ID
+		}
+		slices.Sort(ids)
+		slog.Warn("ambiguous branch binding, not delivering", "subject", ev.Subject, "workspaces", ids)
+	}
+	return nil
 }
 
 func (b *Binder) Bind(bd core.Binding) { b.state.SetBinding(bd) }
 
-func (b *Binder) Unbind(s core.Subject) { b.state.DeleteBinding(s) }
+// Unbind ends one workspace's binding of s.
+func (b *Binder) Unbind(s core.Subject, workspace string) { b.state.DeleteBinding(s, workspace) }
 
-func (b *Binder) Binding(s core.Subject) (core.Binding, bool) { return b.state.Binding(s) }
+func (b *Binder) Binding(s core.Subject, workspace string) (core.Binding, bool) {
+	return b.state.Binding(s, workspace)
+}
 
-func (b *Binder) Bindings() []core.Binding { return b.state.Bindings() }
+// Bindings lists the workspaces watching s.
+func (b *Binder) Bindings(s core.Subject) []core.Binding { return b.state.Bindings(s) }
+
+func (b *Binder) AllBindings() []core.Binding { return b.state.AllBindings() }
 
 func matchesBranch(ws host.Workspace, ev core.Event) bool {
 	branch := ev.Bind["branch"]

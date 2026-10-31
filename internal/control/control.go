@@ -40,8 +40,9 @@ type WatchRequest struct {
 type WatchResponse struct {
 	Subject   core.Subject `json:"subject"`
 	Workspace string       `json:"workspace"`
-	// Moved names the workspace that watched the subject before this one.
-	Moved string `json:"moved,omitzero"`
+	// Others lists the other workspaces that watch the subject too. Each
+	// gets its own updates.
+	Others []string `json:"others,omitzero"`
 }
 
 type Status struct {
@@ -61,7 +62,7 @@ type RemindRequest struct {
 
 type Handler interface {
 	Watch(ctx context.Context, req WatchRequest) (WatchResponse, error)
-	Unwatch(ctx context.Context, subject core.Subject) error
+	Unwatch(ctx context.Context, req WatchRequest) error
 	Remind(ctx context.Context, req RemindRequest) (core.Reminder, error)
 	Unremind(ctx context.Context, id string) error
 	Status(ctx context.Context) Status
@@ -103,7 +104,7 @@ func Serve(ctx context.Context, path string, h Handler) error {
 			reply(w, nil, err)
 			return
 		}
-		reply(w, struct{}{}, h.Unwatch(r.Context(), req.Subject))
+		reply(w, struct{}{}, h.Unwatch(r.Context(), req))
 	})
 	mux.HandleFunc("POST /remind", func(w http.ResponseWriter, r *http.Request) {
 		var req RemindRequest
@@ -171,8 +172,9 @@ func (c *Client) Watch(ctx context.Context, req WatchRequest) (WatchResponse, er
 	return resp, c.do(ctx, http.MethodPost, "/watch", req, &resp)
 }
 
-func (c *Client) Unwatch(ctx context.Context, subject core.Subject) error {
-	return c.do(ctx, http.MethodPost, "/unwatch", WatchRequest{Subject: subject}, nil)
+// Unwatch ends one workspace's watch of subject.
+func (c *Client) Unwatch(ctx context.Context, subject core.Subject, workspace string) error {
+	return c.do(ctx, http.MethodPost, "/unwatch", WatchRequest{Subject: subject, Workspace: workspace}, nil)
 }
 
 func (c *Client) Remind(ctx context.Context, req RemindRequest) (core.Reminder, error) {

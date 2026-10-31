@@ -23,10 +23,15 @@ type State interface {
 	Snapshot(source string, s core.Subject) (map[string]any, bool)
 	SetSnapshot(source string, s core.Subject, fields map[string]any)
 
-	Binding(s core.Subject) (core.Binding, bool)
+	// Bindings are per subject and workspace: several workspaces may watch
+	// one subject, and each gets its own delivery.
+	Binding(s core.Subject, workspace string) (core.Binding, bool)
 	SetBinding(b core.Binding)
-	DeleteBinding(s core.Subject)
-	Bindings() []core.Binding
+	DeleteBinding(s core.Subject, workspace string)
+	// Bindings lists the bindings of one subject, by workspace.
+	Bindings(s core.Subject) []core.Binding
+	// AllBindings lists every binding, by subject and then workspace.
+	AllBindings() []core.Binding
 }
 
 type snapshotKey struct {
@@ -34,10 +39,21 @@ type snapshotKey struct {
 	subject core.Subject
 }
 
+type bindingKey struct {
+	subject   core.Subject
+	workspace string
+}
+
+func keyOf(b core.Binding) bindingKey { return bindingKey{b.Subject, b.Workspace} }
+
+func compareBindings(a, b core.Binding) int {
+	return cmp.Or(cmp.Compare(a.Subject, b.Subject), cmp.Compare(a.Workspace, b.Workspace))
+}
+
 type Memory struct {
 	mu        sync.Mutex
 	snapshots map[snapshotKey]map[string]any
-	bindings  map[core.Subject]core.Binding
+	bindings  map[bindingKey]core.Binding
 
 	// watchesPath, when set, keeps explicit bindings across restarts. Only
 	// those: someone asked for them, while the others rebuild themselves.
@@ -62,7 +78,7 @@ func (m *Memory) PersistWatches(path string) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	for _, b := range list {
-		m.bindings[b.Subject] = b
+		m.bindings[keyOf(b)] = b
 	}
 	return nil
 }
@@ -78,7 +94,7 @@ func (m *Memory) saveWatches() {
 			list = append(list, b)
 		}
 	}
-	slices.SortFunc(list, func(a, b core.Binding) int { return cmp.Compare(a.Subject, b.Subject) })
+	slices.SortFunc(list, compareBindings)
 	data, err := json.MarshalIndent(list, "", "  ")
 	if err == nil {
 		err = os.MkdirAll(filepath.Dir(m.watchesPath), 0o755)
@@ -98,7 +114,7 @@ func (m *Memory) saveWatches() {
 func NewMemory() *Memory {
 	return &Memory{
 		snapshots: map[snapshotKey]map[string]any{},
-		bindings:  map[core.Subject]core.Binding{},
+		bindings:  map[bindingKey]core.Binding{},
 	}
 }
 
@@ -115,37 +131,49 @@ func (m *Memory) SetSnapshot(source string, s core.Subject, fields map[string]an
 	m.snapshots[snapshotKey{source, s}] = fields
 }
 
-func (m *Memory) Binding(s core.Subject) (core.Binding, bool) {
+func (m *Memory) Binding(s core.Subject, workspace string) (core.Binding, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	b, ok := m.bindings[s]
+	b, ok := m.bindings[bindingKey{s, workspace}]
 	return b, ok
 }
 
 func (m *Memory) SetBinding(b core.Binding) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	old, had := m.bindings[b.Subject]
-	m.bindings[b.Subject] = b
+	old, had := m.bindings[keyOf(b)]
+	m.bindings[keyOf(b)] = b
 	if b.Via == "explicit" || had && old.Via == "explicit" {
 		m.saveWatches()
 	}
 }
 
-func (m *Memory) DeleteBinding(s core.Subject) {
+func (m *Memory) DeleteBinding(s core.Subject, workspace string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	b, ok := m.bindings[s]
-	delete(m.bindings, s)
+	k := bindingKey{s, workspace}
+	b, ok := m.bindings[k]
+	delete(m.bindings, k)
 	if ok && b.Via == "explicit" {
 		m.saveWatches()
 	}
 }
 
-func (m *Memory) Bindings() []core.Binding {
+func (m *Memory) Bindings(s core.Subject) []core.Binding {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return slices.SortedFunc(maps.Values(m.bindings), func(a, b core.Binding) int {
-		return cmp.Compare(a.Subject, b.Subject)
-	})
+	var list []core.Binding
+	for k, b := range m.bindings {
+		if k.subject == s {
+			list = append(list, b)
+		}
+	}
+	slices.SortFunc(list, compareBindings)
+	return list
+}
+
+func (m *Memory) AllBindings() []core.Binding {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.SortedFunc(maps.Values(m.bindings), compareBindings)
 }

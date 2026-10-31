@@ -59,31 +59,32 @@ func (r *Router) Route(ev core.Event) {
 		log.Info("drop", "reason", reason, "actor", ev.Actor)
 		return
 	}
-	var (
-		ws    host.Workspace
-		bd    core.Binding
-		isNew bool
-		ok    bool
-	)
+	var targets []bind.Target
 	if ev.Workspace != "" {
-		ws, ok = r.binder.Workspace(ev.Workspace)
+		if ws, ok := r.binder.Workspace(ev.Workspace); ok {
+			targets = []bind.Target{{Workspace: ws}}
+		}
 	} else {
-		ws, bd, isNew, ok = r.binder.Resolve(ev)
+		targets = r.binder.Resolve(ev)
 	}
-	if !ok {
+	if len(targets) == 0 {
 		log.Info("drop", "reason", "no workspace", "summary", ev.Summary)
 		return
 	}
-	log.Info("queued", "workspace", ws.ID, "summary", ev.Summary)
 	delay := r.delivery.Debounce.Duration
 	if ev.Urgent {
 		delay = r.delivery.UrgentDebounce.Duration
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	q := r.queue(ws.ID)
-	q.items = append(q.items, item{ev: ev, bd: bd, isNew: isNew})
-	r.schedule(ws.ID, q, delay)
+	// One queue per workspace, so each watcher gets its own batch, debounce
+	// and retries when its agent is blocked.
+	for _, t := range targets {
+		log.Info("queued", "workspace", t.Workspace.ID, "summary", ev.Summary)
+		q := r.queue(t.Workspace.ID)
+		q.items = append(q.items, item{ev: ev, bd: t.Binding, isNew: t.New})
+		r.schedule(t.Workspace.ID, q, delay)
+	}
 }
 
 // Kick delivers a batch that is waiting for a retry now, because the host
@@ -177,9 +178,11 @@ func (r *Router) flush(id string) {
 	q.retrying = false
 	r.mu.Unlock()
 	slog.Info("delivered", "workspace", id, "events", len(items))
+	// Only this workspace's binding: the others end when their own copy of
+	// the event is delivered.
 	for _, it := range items {
 		if it.ev.Terminal {
-			r.binder.Unbind(it.ev.Subject)
+			r.binder.Unbind(it.ev.Subject, id)
 		}
 	}
 }

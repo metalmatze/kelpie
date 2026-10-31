@@ -2,6 +2,7 @@ package route
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ type fakeHost struct {
 	mu        sync.Mutex
 	blocked   bool
 	delivered []string
+	to        []string // workspace of each delivery
 	got       chan struct{}
 }
 
@@ -28,7 +30,7 @@ func (f *fakeHost) State(context.Context, host.Workspace) (host.AgentState, erro
 	return host.Idle, nil
 }
 
-func (f *fakeHost) Deliver(_ context.Context, _ host.Workspace, text string) error {
+func (f *fakeHost) Deliver(_ context.Context, ws host.Workspace, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.blocked {
@@ -36,6 +38,7 @@ func (f *fakeHost) Deliver(_ context.Context, _ host.Workspace, text string) err
 		return host.ErrBlocked
 	}
 	f.delivered = append(f.delivered, text)
+	f.to = append(f.to, ws.ID)
 	f.got <- struct{}{}
 	return nil
 }
@@ -105,8 +108,34 @@ func TestBlockedRetriesAndTerminalUnbinds(t *testing.T) {
 		t.Fatalf("delivered %q", h.delivered)
 	}
 	time.Sleep(10 * time.Millisecond) // unbind runs right after Deliver returns
-	if _, ok := st.Binding("github:acme/api#421"); ok {
+	if got := st.Bindings("github:acme/api#421"); got != nil {
 		t.Fatal("terminal event did not unbind")
+	}
+}
+
+// Every watching workspace gets its own copy, and a terminal event ends only
+// the binding of the workspace it was delivered to.
+func TestSeveralWorkspacesEachGetDelivery(t *testing.T) {
+	r, h, st := setup(t)
+	r.binder.SetWorkspaces("fake", []host.Workspace{{Host: "fake", ID: "w1:p1"}, {Host: "fake", ID: "w2:p1"}})
+	for _, id := range []string{"w1:p1", "w2:p1"} {
+		r.binder.Bind(core.Binding{Subject: "github:acme/api#421", Workspace: id, Via: "explicit"})
+	}
+	h.blocked = true // w1:p1 or w2:p1, whichever comes first, retries later
+	e := ev("state.merged", "", true)
+	e.Terminal = true
+	r.Route(e)
+	wait(t, h)
+	wait(t, h)
+	h.mu.Lock()
+	to := slices.Sorted(slices.Values(h.to))
+	h.mu.Unlock()
+	if !slices.Equal(to, []string{"w1:p1", "w2:p1"}) {
+		t.Fatalf("delivered to %v", to)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if got := st.Bindings("github:acme/api#421"); got != nil {
+		t.Fatalf("bindings left %+v", got)
 	}
 }
 

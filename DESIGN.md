@@ -237,9 +237,11 @@ A source runs one PromQL query whose result is grouped by a binding label (`name
 
 ## Binding
 
-Binders turn an event's subject into a workspace. They run in order, and the first confident match wins; a fuzzy match goes to the confirmation queue instead.
+Binders turn an event's subject into the workspaces that watch it. They run in order, and the first confident match wins; a fuzzy match goes to the confirmation queue instead.
 
-1. **Explicit:** `kelpie watch <provider> <target>` from inside a workspace (herdr: `$HERDR_PANE_ID`; Orca: `orca worktree current`), or `--workspace`. Always confident.
+**Several watchers.** A binding is a subject and a workspace, so several agents can watch one subject: a PR's author and its reviewer, or every agent working in one repo watching its inbox. Each workspace gets its own copy of every event, with its own debounce and blocked queue. kelpie still polls the subject once, for as long as any workspace watches it. `kelpie status` lists one line per subject and workspace.
+
+1. **Explicit:** `kelpie watch <provider> <target>` from inside a workspace (herdr: `$HERDR_PANE_ID`; Orca: `orca worktree current`), or `--workspace`. Always confident. Watching from a second workspace adds a binding instead of moving the first.
 2. **Branch:** kelpie keeps a workspace -> repo + branch map, refreshed on host events. A PR whose head equals that branch binds. A Linear ID in the branch name (`eng-123-fix-auth`) binds `linear:ENG-123`.
 3. **Repo inbox (planned):** a workspace whose branch is the repo's default branch (from `gh repo view --json defaultBranchRef`, cached) becomes that repo's inbox and receives `github-inbox:` subjects. If two workspaces sit on the default branch, the choice goes to the confirmation queue. Today `kelpie watch github <owner/repo>` from inside a workspace sets it explicitly.
 4. **Kubernetes:** a namespace pattern (`dev-{branch}`) or a label on the resource binds k8s subjects.
@@ -250,7 +252,7 @@ Binders turn an event's subject into a workspace. They run in order, and the fir
 
 **Confirmation queue.** `kelpie pending` lists suggestions; a herdr popup (`prefix+w`) can show the same list for a one-key yes or no. Unanswered suggestions expire after 24 h.
 
-**Unbinding.** A binding ends when its workspace closes, when a terminal event is delivered (merged, Done, resolved), or on `kelpie unwatch`.
+**Unbinding.** A binding ends when its workspace closes, when a terminal event is delivered to that workspace (merged, Done, resolved), or on `kelpie unwatch` from that workspace. The other workspaces watching the subject keep theirs.
 
 ## Delivery
 
@@ -449,7 +451,7 @@ kelpie doctor                    # CLIs on PATH, auth, MCP sessions, hosts, last
 | `kelpie status` | sources, bindings per workspace, queued deliveries |
 | `kelpie watch github <pr-url, owner/repo#N, owner/repo or org>` | bind a PR, or a repo's or org's GitHub notifications, to this workspace; without a target, the notifications of the current directory's repo |
 | `kelpie watch <provider> <target>` | one subcommand per provider, added with its source: `slack <thread-url>`, `linear <id>`, `k8s`, `prom` (planned) |
-| `kelpie unwatch <subject>`, `kelpie unwatch <provider> <target>` | remove a binding, by the subject `kelpie status` lists or as it was watched |
+| `kelpie unwatch <subject>`, `kelpie unwatch <provider> <target>` | remove this workspace's binding, by the subject `kelpie status` lists or as it was watched; other workspaces keep theirs |
 | `kelpie remind --in/--at/--cron <text>` | prompt this workspace's agent with `<text>` when due |
 | `kelpie reminders`, `kelpie unremind <id>` | list or cancel this workspace's reminders |
 | `kelpie pending` | confirm or reject fuzzy matches |
