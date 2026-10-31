@@ -1,0 +1,56 @@
+id = "kelpie"
+name = "kelpie"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Watch pull requests for an agent with a ctrl-click or a key, see what kelpie watches, and keep its daemon running in a workspace of its own. Needs kelpie, gh and jq on PATH."
+platforms = ["linux", "macos"]
+
+# Starts the daemon in a workspace "kelpie daemon" when none answers, so
+# kelpie runs whenever herdr does. A startup hook may not leave a process
+# behind, hence the pane.
+[[startup]]
+command = ["bash", "kelpie-plugin.sh", "startup"]
+
+# Ctrl-click a pull request link to watch it for the pane it was clicked in.
+[[link_handlers]]
+id = "pull-request"
+title = "kelpie: watch this pull request"
+pattern = "^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+"
+action = "watch-link"
+
+[[actions]]
+id = "watch-link"
+title = "kelpie: watch the clicked pull request"
+contexts = ["pane"]
+command = ["bash", "kelpie-plugin.sh", "watch-link"]
+
+# Bind it in ~/.config/herdr/config.toml:
+#   [[keys.command]]
+#   key = "prefix+alt+w"
+#   type = "plugin_action"
+#   command = "kelpie.watch-pr"
+[[actions]]
+id = "watch-pr"
+title = "kelpie: watch this pane's pull request"
+description = "Watches the pull request of the focused pane's branch, for that pane's agent."
+contexts = ["pane"]
+command = ["bash", "kelpie-plugin.sh", "watch-pr"]
+
+#   [[keys.command]]
+#   key = "prefix+alt+k"
+#   type = "plugin_action"
+#   command = "kelpie.status"
+[[actions]]
+id = "status"
+title = "kelpie: status"
+description = "What every pane watches, its reminders and undelivered updates."
+contexts = ["global", "workspace", "pane"]
+command = ["bash", "kelpie-plugin.sh", "status"]
+
+[[panes]]
+id = "status"
+title = "kelpie"
+placement = "popup"
+width = "80%"
+height = "60%"
+command = ["bash", "kelpie-plugin.sh", "status-popup"]

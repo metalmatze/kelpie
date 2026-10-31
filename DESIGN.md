@@ -466,7 +466,9 @@ kelpie doctor                    # CLIs on PATH, auth, MCP sessions, hosts, last
 | `kelpie source test <name>` | run one source once; print raw output, observations and events |
 | `kelpie source record <name>` | save raw output as a test fixture |
 
-**Daemon lifecycle.** launchd on macOS or a systemd user unit on Linux runs `kelpie daemon`. It starts at login, reconnects to hosts with backoff, and holds a lockfile so a second copy exits.
+**Daemon lifecycle.** The herdr plugin (`herdr-plugin/`, `herdr plugin link herdr-plugin`) starts `kelpie daemon` when herdr starts and no daemon answers, in a workspace labeled "kelpie daemon" that it reuses after herdr restores its session. The control socket doubles as the lock, so a second copy refuses to start. Without herdr, launchd or a systemd user unit would do the same.
+
+**herdr plugin.** Besides the daemon it adds three ways in that skip the agent: ctrl-click on a PR link watches it for the pane it was clicked in, `kelpie.watch-pr` watches the PR of the focused pane's branch (`gh pr view` in its directory), and `kelpie.status` opens `kelpie status` in a popup. Actions have no terminal, so they answer with a herdr notification.
 
 **Agent side.** The `kelpie` skill (`skills/kelpie/SKILL.md`, linked into `~/.claude/skills`) carries both halves: offering `kelpie watch` when a PR comes up, and what to do with each `[kelpie]` event kind. A skill rather than an `AGENTS.md` block, so it loads only when a PR or an update is in play.
 
