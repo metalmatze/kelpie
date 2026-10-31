@@ -388,7 +388,11 @@ func (d *daemon) fireReminder(r core.Reminder, late time.Duration) {
 }
 
 // shortDuration rounds to minutes and drops zero units: 1h, 1h40m, 40m.
+// Under a minute it says so rather than printing nothing.
 func shortDuration(d time.Duration) string {
+	if d < 30*time.Second {
+		return "under a minute"
+	}
 	s := d.Round(time.Minute).String()
 	s = strings.TrimSuffix(s, "0s")
 	if strings.HasSuffix(s, "h0m") {
@@ -601,6 +605,11 @@ type printHost struct{ host.Host }
 
 func (p printHost) Badge(_ context.Context, ws host.Workspace, b host.Badge) error {
 	fmt.Printf("--- badge on %s %s: %q\n", ws.Host, ws.ID, b)
+	return nil
+}
+
+func (p printHost) Notify(_ context.Context, n host.Notification) error {
+	fmt.Printf("--- notification: %s: %s\n", n.Title, n.Body)
 	return nil
 }
 

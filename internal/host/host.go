@@ -41,6 +41,14 @@ type Host interface {
 	// Badge shows what the workspace watches as a short label, like herdr's
 	// sidebar token $kelpie. A zero Badge removes it.
 	Badge(ctx context.Context, ws Workspace, b Badge) error
+	// Notify shows the person a notification, if the host can.
+	Notify(ctx context.Context, n Notification) error
+}
+
+type Notification struct {
+	Title, Body string
+	// NeedsYou is a request for the person's attention, not just news.
+	NeedsYou bool
 }
 
 // Badge is what one workspace watches.

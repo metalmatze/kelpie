@@ -10,6 +10,9 @@ delivery:
   urgent_debounce: 5s
   retry: 30s            # blocked agent or failed send
   prefix: "[kelpie]"
+  notify:               # herdr notifications for you, besides the agent's prompt
+    stuck: 5m           # updates for a pane undelivered this long, e.g. its agent waits at a question; 0s: never
+    kinds: [state.merged]
 
 reminders:
   catch_up: 12h         # a reminder missed while kelpie was down or asleep fires late up to this, else is skipped

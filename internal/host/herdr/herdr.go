@@ -187,6 +187,16 @@ func (h *Herdr) token(ctx context.Context, kind, id, text string) error {
 	return h.run(ctx, nil, args...)
 }
 
+// Notify uses herdr's own notifications, which follow its ui.toast and
+// ui.sound settings.
+func (h *Herdr) Notify(ctx context.Context, n host.Notification) error {
+	sound := "done"
+	if n.NeedsYou {
+		sound = "request"
+	}
+	return h.run(ctx, nil, "notification", "show", n.Title, "--body", n.Body, "--sound", sound)
+}
+
 // spaceOf is the herdr workspace of a pane: pane IDs are workspace-qualified
 // (w3:p1), and a pane moved to another workspace gets a new ID.
 func spaceOf(pane string) string {

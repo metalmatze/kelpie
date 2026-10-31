@@ -267,6 +267,8 @@ The router filters and batches events per workspace, then delivery sends one pro
 - **Blocked or busy:** if herdr returns `agent_blocked` or the Orca idle probe times out, the batch stays queued and is retried on the next host change or after 30 s.
 - **Quiet hours:** optional; events queue and flush as one digest when they end.
 
+**Notifications are for the person.** Prompts go to the agent; a host notification (herdr's `notification show`, following its toast and sound settings) goes to you, in two cases. Once when a pane's updates have been undeliverable for `delivery.notify.stuck` (5 min), typically because its agent waits at a question nobody answers. And for the kinds in `delivery.notify.kinds` (`state.merged`), news worth seeing while the agent handles it.
+
 **Message format.** Short, stable and machine-recognizable, so an AGENTS.md rule can key on the prefix:
 
 ```text

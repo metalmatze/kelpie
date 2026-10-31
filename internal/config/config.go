@@ -45,6 +45,17 @@ type Delivery struct {
 	UrgentDebounce Duration `yaml:"urgent_debounce"`
 	Retry          Duration `yaml:"retry"`
 	Prefix         string   `yaml:"prefix"`
+	Notify         Notify   `yaml:"notify"`
+}
+
+// Notify raises host notifications for the person, not the agent.
+type Notify struct {
+	// Stuck notifies once when a workspace's updates could not be delivered
+	// for this long, typically an agent waiting at a question. 0: never.
+	Stuck Duration `yaml:"stuck"`
+	// Kinds also notify when delivered, for news the person wants to see
+	// even while the agent handles it.
+	Kinds []string `yaml:"kinds"`
 }
 
 type Reminders struct {

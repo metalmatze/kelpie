@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +43,8 @@ type queue struct {
 	// retrying is set while the batch waits after a failed delivery; only then
 	// may Kick send it early, or a ready agent would cut debouncing short.
 	retrying bool
+	failing  time.Time // first failed delivery since the last success
+	notified bool      // the person was told about this streak of failures
 }
 
 func New(ctx context.Context, d config.Delivery, rules Rules, b *bind.Binder, hosts []host.Host) *Router {
@@ -170,14 +174,41 @@ func (r *Router) flush(id string) {
 		r.mu.Lock()
 		q.items = append(items, q.items...)
 		q.retrying = true
+		if q.failing.IsZero() {
+			q.failing = time.Now()
+		}
+		stuck := r.delivery.Notify.Stuck.Duration
+		tell := stuck > 0 && !q.notified && time.Since(q.failing) >= stuck
+		q.notified = q.notified || tell
+		waiting, since := len(q.items), time.Since(q.failing)
 		r.schedule(id, q, r.delivery.Retry.Duration)
 		r.mu.Unlock()
+		if tell {
+			why := "its agent is waiting at a question or approval"
+			if !errors.Is(err, host.ErrBlocked) {
+				why = err.Error()
+			}
+			r.notify(ws, host.Notification{
+				Title:    fmt.Sprintf("kelpie: %d updates waiting for %s", waiting, wsName(ws)),
+				Body:     fmt.Sprintf("Undelivered for %s: %s.", since.Round(time.Minute), why),
+				NeedsYou: true,
+			})
+		}
 		return
 	}
 	r.mu.Lock()
 	q.retrying = false
+	q.failing, q.notified = time.Time{}, false
 	r.mu.Unlock()
 	slog.Info("delivered", "workspace", id, "events", len(items))
+	for _, it := range items {
+		if slices.Contains(r.delivery.Notify.Kinds, it.ev.Kind) {
+			r.notify(ws, host.Notification{
+				Title: fmt.Sprintf("kelpie: %s %s", it.ev.Subject, it.ev.Kind),
+				Body:  fmt.Sprintf("%s (told the agent in %s)", it.ev.Summary, wsName(ws)),
+			})
+		}
+	}
 	// Only this workspace's binding: the others end when their own copy of
 	// the event is delivered.
 	for _, it := range items {
@@ -185,6 +216,22 @@ func (r *Router) flush(id string) {
 			r.binder.Unbind(it.ev.Subject, id)
 		}
 	}
+}
+
+func (r *Router) notify(ws host.Workspace, n host.Notification) {
+	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
+	defer cancel()
+	if err := r.hosts[ws.Host].Notify(ctx, n); err != nil {
+		slog.Warn("notification failed", "workspace", ws.ID, "err", err)
+	}
+}
+
+// wsName is how a person recognizes a workspace: its directory, then its ID.
+func wsName(ws host.Workspace) string {
+	if ws.Path == "" {
+		return ws.ID
+	}
+	return fmt.Sprintf("%s (%s)", filepath.Base(ws.Path), ws.ID)
 }
 
 // Render writes the prompt. It holds only structured fields (states, counts,
