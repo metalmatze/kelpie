@@ -40,6 +40,28 @@ var paneEvents = []subscription{
 // panes is gone.
 var errPaneNotFound = errors.New("pane_not_found")
 
+// errEventsLost is herdr dropping a subscriber that read too slowly. Nothing
+// is wrong with the socket, so reconnect at once instead of polling.
+var errEventsLost = errors.New("events_lost")
+
+// streamError returns the error herdr sends on an event stream before
+// closing it.
+func streamError(line []byte) error {
+	var msg struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(line, &msg) != nil || msg.Error == nil {
+		return nil
+	}
+	if msg.Error.Code == errEventsLost.Error() {
+		return errEventsLost
+	}
+	return fmt.Errorf("herdr: %s: %s", msg.Error.Code, msg.Error.Message)
+}
+
 type subscription struct {
 	Type   string `json:"type"`
 	PaneID string `json:"pane_id,omitzero"`
@@ -61,6 +83,11 @@ func (h *Herdr) Watch(ctx context.Context, ev host.Events) error {
 		})
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, errEventsLost) {
+			// follow resyncs once it is subscribed again.
+			slog.Info("herdr dropped kelpie's event stream for reading too slowly, reconnecting")
+			continue
 		}
 		if !down {
 			slog.Warn("herdr event stream lost; polling until it is back", "err", err, "every", h.Poll)
@@ -102,6 +129,9 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 		if err := json.Unmarshal(line, &msg); err != nil {
 			slog.Warn("unreadable herdr event", "err", err)
 			continue
+		}
+		if err := streamError(line); err != nil {
+			return err
 		}
 		d := msg.Data
 		// herdr names some events with dots and most with underscores.
@@ -214,6 +244,9 @@ func (h *Herdr) statusLoop(ctx context.Context, ids []string, ev host.Events, re
 		} else {
 			slog.Debug("herdr status stream lost, reconnecting", "err", err)
 		}
+		if errors.Is(err, errEventsLost) {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -234,6 +267,9 @@ func readStatus(r *bufio.Reader, ready func(id string)) error {
 				PaneID      string `json:"pane_id"`
 				AgentStatus string `json:"agent_status"`
 			} `json:"data"`
+		}
+		if err := streamError(line); err != nil {
+			return err
 		}
 		// herdr names this one with dots (pane.agent_status_changed) while
 		// its other events use underscores (pane_created); accept both.
