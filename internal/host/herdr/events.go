@@ -142,11 +142,11 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 		case "pane_updated":
 			ev.Upsert(h.workspace(ctx, d.Pane))
 		case "pane_closed", "pane_exited":
-			h.forget(d.PaneID)
+			h.forget(ctx, d.PaneID)
 			ev.Remove(h.Name(), d.PaneID)
 			h.publishIDs(ids)
 		case "pane_moved":
-			h.forget(d.PreviousPaneID)
+			h.forget(ctx, d.PreviousPaneID)
 			ev.Move(h.Name(), d.PreviousPaneID, h.workspace(ctx, d.Pane))
 			h.publishIDs(ids)
 		case "pane_agent_detected":
@@ -172,7 +172,17 @@ func (h *Herdr) resync(ctx context.Context, ev host.Events, ids chan []string) {
 	}
 	h.mu.Lock()
 	maps.DeleteFunc(h.panes, func(id string, _ cachedPane) bool { return !live[id] })
+	maps.DeleteFunc(h.badges, func(id string, _ host.Badge) bool { return !live[id] })
+	// Report every workspace badge again: panes may have closed unseen, or
+	// herdr restarted and forgot all tokens.
+	spaces := slices.Collect(maps.Keys(h.spaces))
+	clear(h.spaces)
 	h.mu.Unlock()
+	for _, s := range spaces {
+		if err := h.reportSpace(ctx, s); err != nil {
+			slog.Warn("workspace badge not updated", "workspace", s, "err", err)
+		}
+	}
 	ev.Resync(h.Name(), list)
 	h.publishIDs(ids)
 }

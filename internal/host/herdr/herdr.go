@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +25,9 @@ type Herdr struct {
 
 	mu        sync.Mutex
 	panes     map[string]cachedPane
-	statusKey string // pane IDs the status subscription was last built for
+	statusKey string                // pane IDs the status subscription was last built for
+	badges    map[string]host.Badge // per pane
+	spaces    map[string]string     // herdr workspace -> its $kelpie token as last reported
 }
 
 type cachedPane struct {
@@ -83,10 +87,19 @@ func (h *Herdr) workspace(ctx context.Context, p paneInfo) host.Workspace {
 	return ws
 }
 
-func (h *Herdr) forget(id string) {
+// forget drops a pane that closed or moved, and its share of its
+// workspace's badge.
+func (h *Herdr) forget(ctx context.Context, id string) {
 	h.mu.Lock()
 	delete(h.panes, id)
+	_, badged := h.badges[id]
+	delete(h.badges, id)
 	h.mu.Unlock()
+	if badged {
+		if err := h.reportSpace(ctx, spaceOf(id)); err != nil {
+			slog.Warn("workspace badge not updated", "workspace", spaceOf(id), "err", err)
+		}
+	}
 }
 
 func (h *Herdr) State(ctx context.Context, ws host.Workspace) (host.AgentState, error) {
@@ -113,17 +126,72 @@ func (h *Herdr) Deliver(ctx context.Context, ws host.Workspace, text string) err
 	return h.run(ctx, nil, "agent", "prompt", ws.ID, text)
 }
 
-// Badge sets the pane token $kelpie, which shows only where the sidebar
-// layout in herdr's config.toml lists it. herdr forgets tokens when its
-// server restarts; the daemon reports them again after a resync.
-func (h *Herdr) Badge(ctx context.Context, ws host.Workspace, text string) error {
-	args := []string{"pane", "report-metadata", ws.ID, "--source", "kelpie"}
+// Badge sets the token $kelpie on the pane, and on its herdr workspace the
+// subjects all of the workspace's panes watch, for the Spaces sidebar.
+// Tokens show only where the sidebar layout in herdr's config.toml lists
+// them. herdr forgets them when its server restarts; the daemon reports them
+// again after a resync.
+func (h *Herdr) Badge(ctx context.Context, ws host.Workspace, b host.Badge) error {
+	if err := h.token(ctx, "pane", ws.ID, b.String()); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	if h.badges == nil {
+		h.badges = map[string]host.Badge{}
+	}
+	if b.String() == "" {
+		delete(h.badges, ws.ID)
+	} else {
+		h.badges[ws.ID] = b
+	}
+	h.mu.Unlock()
+	return h.reportSpace(ctx, spaceOf(ws.ID))
+}
+
+// reportSpace sets a herdr workspace's token to the subjects its panes
+// watch, without reminders: those belong to one agent.
+func (h *Herdr) reportSpace(ctx context.Context, space string) error {
+	h.mu.Lock()
+	var subjects []string
+	for id, b := range h.badges {
+		if spaceOf(id) == space {
+			subjects = append(subjects, b.Subjects...)
+		}
+	}
+	slices.Sort(subjects)
+	text := host.Badge{Subjects: slices.Compact(subjects)}.String()
+	old, ok := h.spaces[space]
+	h.mu.Unlock()
+	if ok && old == text || !ok && text == "" {
+		return nil
+	}
+	if err := h.token(ctx, "workspace", space, text); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	if h.spaces == nil {
+		h.spaces = map[string]string{}
+	}
+	h.spaces[space] = text
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *Herdr) token(ctx context.Context, kind, id, text string) error {
+	args := []string{kind, "report-metadata", id, "--source", "kelpie"}
 	if text == "" {
 		args = append(args, "--clear-token", "kelpie")
 	} else {
 		args = append(args, "--token", "kelpie="+text)
 	}
 	return h.run(ctx, nil, args...)
+}
+
+// spaceOf is the herdr workspace of a pane: pane IDs are workspace-qualified
+// (w3:p1), and a pane moved to another workspace gets a new ID.
+func spaceOf(pane string) string {
+	space, _, _ := strings.Cut(pane, ":")
+	return space
 }
 
 type cliError struct {

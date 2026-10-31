@@ -3,7 +3,9 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -36,9 +38,23 @@ type Host interface {
 	Watch(ctx context.Context, ev Events) error
 	State(ctx context.Context, ws Workspace) (AgentState, error)
 	Deliver(ctx context.Context, ws Workspace, text string) error
-	// Badge shows a short label on the workspace, like herdr's sidebar
-	// token $kelpie. Empty text removes it.
-	Badge(ctx context.Context, ws Workspace, text string) error
+	// Badge shows what the workspace watches as a short label, like herdr's
+	// sidebar token $kelpie. A zero Badge removes it.
+	Badge(ctx context.Context, ws Workspace, b Badge) error
+}
+
+// Badge is what one workspace watches.
+type Badge struct {
+	Subjects  []string // one label per watched subject, sorted
+	Reminders int
+}
+
+func (b Badge) String() string {
+	parts := b.Subjects
+	if b.Reminders > 0 {
+		parts = append(slices.Clip(parts), fmt.Sprintf("⏰%d", b.Reminders))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // Events receives what a host's Watch observes.

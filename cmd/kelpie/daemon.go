@@ -44,7 +44,7 @@ type daemon struct {
 
 	badgeMu sync.Mutex
 	badges  map[core.Subject]string // latest badge per subject, from its source's badge expression
-	shown   map[string]string       // workspace -> badge the host shows, to report only changes
+	shown   map[string]string       // workspace -> badge the host shows, as text, to report only changes
 }
 
 type runner struct {
@@ -532,7 +532,9 @@ func (d *daemon) refreshBadges() {
 	live := map[string]bool{}
 	for _, ws := range d.binder.Workspaces() {
 		live[ws.ID] = true
-		text := badgeText(parts[ws.ID], reminders[ws.ID])
+		slices.Sort(parts[ws.ID])
+		b := host.Badge{Subjects: parts[ws.ID], Reminders: reminders[ws.ID]}
+		text := b.String()
 		if old, ok := d.shown[ws.ID]; ok && old == text || !ok && text == "" {
 			continue
 		}
@@ -541,7 +543,7 @@ func (d *daemon) refreshBadges() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
-		err := h.Badge(ctx, ws, text)
+		err := h.Badge(ctx, ws, b)
 		cancel()
 		if err != nil {
 			slog.Warn("badge not shown", "workspace", ws.ID, "err", err)
@@ -551,14 +553,6 @@ func (d *daemon) refreshBadges() {
 		d.shown[ws.ID] = text
 	}
 	maps.DeleteFunc(d.shown, func(id, _ string) bool { return !live[id] })
-}
-
-func badgeText(parts []string, reminders int) string {
-	slices.Sort(parts)
-	if reminders > 0 {
-		parts = append(parts, fmt.Sprintf("⏰%d", reminders))
-	}
-	return strings.Join(parts, " · ")
 }
 
 // clearBadges removes every badge on shutdown, so no pane shows a watch that
@@ -574,7 +568,7 @@ func (d *daemon) clearBadges() {
 		if !ok || h == nil || text == "" {
 			continue
 		}
-		if err := h.Badge(ctx, ws, ""); err != nil {
+		if err := h.Badge(ctx, ws, host.Badge{}); err != nil {
 			slog.Warn("badge not cleared", "workspace", id, "err", err)
 		}
 	}
@@ -605,8 +599,8 @@ func ghLogin(ctx context.Context) string {
 // printHost delivers to stdout, for --dry-run against real workspaces.
 type printHost struct{ host.Host }
 
-func (p printHost) Badge(_ context.Context, ws host.Workspace, text string) error {
-	fmt.Printf("--- badge on %s %s: %q\n", ws.Host, ws.ID, text)
+func (p printHost) Badge(_ context.Context, ws host.Workspace, b host.Badge) error {
+	fmt.Printf("--- badge on %s %s: %q\n", ws.Host, ws.ID, b)
 	return nil
 }
 
