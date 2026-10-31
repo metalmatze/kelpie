@@ -1,0 +1,102 @@
+[
+  {
+    "id": "202",
+    "unread": true,
+    "reason": "comment",
+    "updated_at": "2026-10-30T10:30:00Z",
+    "last_read_at": null,
+    "subject": {
+      "title": "x",
+      "url": "https://api.github.com/repos/other/web/pulls/6",
+      "latest_comment_url": null,
+      "type": "PullRequest"
+    },
+    "repository": {
+      "id": 1,
+      "name": "web",
+      "full_name": "other/web",
+      "private": true,
+      "owner": {
+        "login": "other",
+        "type": "Organization"
+      }
+    },
+    "url": "https://api.github.com/notifications/threads/202",
+    "subscription_url": "https://api.github.com/notifications/threads/202/subscription"
+  },
+  {
+    "id": "203",
+    "unread": true,
+    "reason": "review_requested",
+    "updated_at": "2026-10-30T10:20:00Z",
+    "last_read_at": null,
+    "subject": {
+      "title": "z",
+      "url": "https://api.github.com/repos/Acme/cli/pulls/9",
+      "latest_comment_url": null,
+      "type": "PullRequest"
+    },
+    "repository": {
+      "id": 1,
+      "name": "cli",
+      "full_name": "Acme/cli",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      }
+    },
+    "url": "https://api.github.com/notifications/threads/203",
+    "subscription_url": "https://api.github.com/notifications/threads/203/subscription"
+  },
+  {
+    "id": "201",
+    "unread": true,
+    "reason": "mention",
+    "updated_at": "2026-10-30T09:30:00Z",
+    "last_read_at": null,
+    "subject": {
+      "title": "x",
+      "url": "https://api.github.com/repos/other/web/pulls/5",
+      "latest_comment_url": null,
+      "type": "PullRequest"
+    },
+    "repository": {
+      "id": 1,
+      "name": "web",
+      "full_name": "other/web",
+      "private": true,
+      "owner": {
+        "login": "other",
+        "type": "Organization"
+      }
+    },
+    "url": "https://api.github.com/notifications/threads/201",
+    "subscription_url": "https://api.github.com/notifications/threads/201/subscription"
+  },
+  {
+    "id": "101",
+    "unread": true,
+    "reason": "review_requested",
+    "updated_at": "2026-10-30T09:00:00Z",
+    "last_read_at": null,
+    "subject": {
+      "title": "y",
+      "url": "https://api.github.com/repos/acme/api/pulls/421",
+      "latest_comment_url": null,
+      "type": "PullRequest"
+    },
+    "repository": {
+      "id": 1,
+      "name": "api",
+      "full_name": "acme/api",
+      "private": true,
+      "owner": {
+        "login": "acme",
+        "type": "Organization"
+      }
+    },
+    "url": "https://api.github.com/notifications/threads/101",
+    "subscription_url": "https://api.github.com/notifications/threads/101/subscription"
+  }
+]

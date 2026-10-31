@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -29,12 +30,12 @@ type Globals struct {
 type CLI struct {
 	Globals
 
-	Watch     WatchCmd     `cmd:"" help:"Watch a pull request and prompt this pane's agent about its updates."`
-	Unwatch   UnwatchCmd   `cmd:"" help:"Stop watching a pull request."`
+	Watch     WatchCmd     `cmd:"" help:"Watch a subject and prompt this pane's agent about its updates."`
+	Unwatch   UnwatchCmd   `cmd:"" help:"Stop watching a subject."`
 	Remind    RemindCmd    `cmd:"" help:"Prompt this pane's agent with a text later, once or on a cron schedule."`
 	Reminders RemindersCmd `cmd:"" help:"List this pane's reminders."`
 	Unremind  UnremindCmd  `cmd:"" help:"Cancel a reminder."`
-	Status    StatusCmd    `cmd:"" help:"List watched pull requests, reminders and queued updates."`
+	Status    StatusCmd    `cmd:"" help:"List watches, reminders and queued updates."`
 	Daemon    DaemonCmd    `cmd:"" help:"Watch sources and deliver updates to agents."`
 	Init      InitCmd      `cmd:"" help:"Write the default config, unless one exists."`
 	Source    struct {
@@ -78,7 +79,7 @@ func (InitCmd) Run(g *Globals) error {
 type SourceTestCmd struct {
 	Name    string `arg:"" help:"Source name."`
 	Raw     bool   `help:"Print the command's raw output instead of observations (for fixtures)."`
-	Subject string `help:"For a for_each source: the subject (PR URL or owner/repo#number) to run for. Default for for_each.source: the first parent subject matching while."`
+	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, or a PR URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
 }
 
 func (c *SourceTestCmd) Run(ctx context.Context, g *Globals) error {
@@ -180,19 +181,34 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 }
 
 type WatchCmd struct {
-	PR        string `arg:"" help:"Pull request URL or owner/repo#number."`
-	Workspace string `help:"Pane to prompt. Default: this pane ($HERDR_PANE_ID)." env:"HERDR_PANE_ID"`
+	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request, or the notifications of a repo or org."`
 }
 
-func (c *WatchCmd) Run(ctx context.Context) error {
+type WatchGitHubCmd struct {
+	Target    string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
+	Workspace string `help:"Pane to prompt. Default: this pane." env:"HERDR_PANE_ID"`
+}
+
+func (c *WatchGitHubCmd) Run(ctx context.Context) error {
 	if c.Workspace == "" {
 		return errors.New("not inside a herdr pane; pass --workspace <pane id>")
 	}
-	subject, err := core.ParseSubject(c.PR)
+	subject, err := githubTarget(ctx, c.Target)
 	if err != nil {
 		return err
 	}
-	resp, err := control.NewClient(control.SocketPath()).Watch(ctx, control.WatchRequest{Subject: subject, Host: "herdr", Workspace: c.Workspace})
+	// The notifications of an org that does not exist are just always empty,
+	// so catch a typo here. The daemon's first poll checks a repo or a PR.
+	if owner, ok := strings.CutPrefix(string(subject), "github-inbox:"); ok && !strings.Contains(owner, "/") {
+		if err := exec.CommandContext(ctx, "gh", "api", "users/"+owner, "--silent").Run(); err != nil {
+			return fmt.Errorf("no GitHub org or user %s (gh api users/%s: %w)", owner, owner, err)
+		}
+	}
+	return watch(ctx, subject, c.Workspace)
+}
+
+func watch(ctx context.Context, subject core.Subject, workspace string) error {
+	resp, err := control.NewClient(control.SocketPath()).Watch(ctx, control.WatchRequest{Subject: subject, Host: "herdr", Workspace: workspace})
 	if err != nil {
 		return err
 	}
@@ -203,15 +219,50 @@ func (c *WatchCmd) Run(ctx context.Context) error {
 	return nil
 }
 
-type UnwatchCmd struct {
-	PR string `arg:"" help:"Pull request URL or owner/repo#number."`
+// githubTarget resolves what watch github and unwatch github were given. An
+// empty target means the notifications of the current directory's repo, as
+// gh resolves it.
+func githubTarget(ctx context.Context, s string) (core.Subject, error) {
+	if s == "" {
+		out, err := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").Output()
+		if err != nil {
+			return "", fmt.Errorf("no GitHub repo in the current directory (gh repo view: %w); pass a pull request, owner/repo or an org", err)
+		}
+		s = strings.TrimSpace(string(out))
+	}
+	return core.GitHubSubject(s)
 }
 
-func (c *UnwatchCmd) Run(ctx context.Context) error {
-	subject, err := core.ParseSubject(c.PR)
+type UnwatchCmd struct {
+	Subject UnwatchSubjectCmd `cmd:"" default:"withargs" help:"Stop watching a subject as kelpie status lists it."`
+	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request, or the notifications of a repo or org."`
+}
+
+type UnwatchSubjectCmd struct {
+	Subject string `arg:"" help:"Subject as kelpie status lists it, like github-inbox:prometheus."`
+}
+
+func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
+	subject, err := core.ParseSubject(c.Subject)
 	if err != nil {
 		return err
 	}
+	return unwatch(ctx, subject)
+}
+
+type UnwatchGitHubCmd struct {
+	Target string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
+}
+
+func (c *UnwatchGitHubCmd) Run(ctx context.Context) error {
+	subject, err := githubTarget(ctx, c.Target)
+	if err != nil {
+		return err
+	}
+	return unwatch(ctx, subject)
+}
+
+func unwatch(ctx context.Context, subject core.Subject) error {
 	if err := control.NewClient(control.SocketPath()).Unwatch(ctx, subject); err != nil {
 		return err
 	}
@@ -227,7 +278,7 @@ func (StatusCmd) Run(ctx context.Context) error {
 		return err
 	}
 	if len(st.Watches) == 0 {
-		fmt.Println("watching nothing; run kelpie watch <pr-url> inside an agent's pane")
+		fmt.Println("watching nothing; run kelpie watch github <pr-url, repo or org> inside an agent's pane")
 	}
 	for _, w := range st.Watches {
 		fmt.Printf("%-50s pane %-8s since %s\n", w.Subject, w.Workspace, w.Since.Format("Jan 2 15:04"))

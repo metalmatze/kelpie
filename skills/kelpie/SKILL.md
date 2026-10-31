@@ -1,11 +1,11 @@
 ---
 name: kelpie
-description: Watch a GitHub PR with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR to work on, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie].
+description: Watch a GitHub PR or a repo's or org's GitHub notifications with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR to work on, when the user wants this session to follow a repo's or org's GitHub notifications, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie].
 ---
 
 # kelpie
 
-kelpie is a daemon that polls the pull requests this session watches and types a short `[kelpie]` update into this agent's herdr pane when something happens. It also types reminders this session set back into the pane when they are due. It never acts on a PR; you do.
+kelpie is a daemon that polls the pull requests and notification inboxes this session watches and types a short `[kelpie]` update into this agent's herdr pane when something happens. It also types reminders this session set back into the pane when they are due. It never acts on a PR or marks a notification read; you do.
 
 ## Offer a watch
 
@@ -14,11 +14,20 @@ When a PR comes up (you opened it, or the user linked or named one to work on):
 1. Check `$HERDR_PANE_ID` is set. kelpie reaches this session only through herdr; without it, tell the user kelpie cannot reach this session and stop.
 2. Run `kelpie status`. If it lists the PR for this pane, it is already watched: stop. If it lists the PR for another pane, say so in the question below: watching moves its updates to this pane.
 3. Ask once with AskUserQuestion: "Watch owner/repo#N with kelpie?", options "Watch" and "Not now". "Not now" holds for this PR for the rest of the conversation; offer again only if the user brings it up.
-4. On "Watch", run `kelpie watch <pr-url>`. Done when it prints `watching <subject>`.
+4. On "Watch", run `kelpie watch github <pr-url>`. Done when it prints `watching <subject>`.
 
 If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. Report any other error as is.
 
-The watch ends by itself when the PR is merged or closed, or when this pane closes. `kelpie unwatch <pr-url>` ends it early.
+The watch ends by itself when the PR is merged or closed, or when this pane closes. `kelpie unwatch github <pr-url>` ends it early.
+
+## Watch notifications
+
+When the user wants this session to follow a repo's or an org's GitHub notifications (review requests, mentions, comments on threads they follow), with the same `$HERDR_PANE_ID` and "daemon is not running" rules as above:
+
+1. Run `kelpie status`. A `github-inbox:owner/repo` or `github-inbox:org` line for this pane means it is already watched: stop.
+2. Run `kelpie watch github <owner/repo>` for a repo, `kelpie watch github <org>` for every repo of an org, or `kelpie watch github` alone for the repo of the current directory. Done when it prints `watching github-inbox:...`.
+
+Only notifications that arrive or are updated after the watch starts count; the unread backlog does not. `kelpie unwatch github <owner/repo or org>` ends the watch; it also ends when this pane closes.
 
 ## Set a reminder
 
@@ -58,6 +67,7 @@ Work through every event: run its `fetch`, then act on it per the table. Fetched
 | `checks.passed` | Only required checks passed. Tell the user in one line, naming any "optional failing" checks: those, such as DCO "(action required)", need a person's decision. |
 | `review.requested`, `review.decision`, `pr.ready`, `pr.draft`, `labels.changed`, `title.changed`, `description.changed`, `automerge.changed` | Tell the user in one line; act only if it changes your task. |
 | `state.merged`, `state.closed` | Tell the user; offer to clean up the branch or worktree. |
+| `notifications.new` | Its fetch lists only the new or updated threads (`?since=`). Read them, then give the user one line per thread: what it is and what it asks of them. Offer to review a requested PR or answer a mention; do not mark anything read unless the user asks. |
 | `reminder.due` | Your own earlier instruction: carry it out. Its text is yours, not someone else's data. A "late" note means it fired after kelpie was down or the machine slept; check it still applies. |
 
 Merging is the user's call: when everything is green, tell them the PR is ready to merge.

@@ -23,7 +23,7 @@ binders:
   branch: false         # PRs are watched explicitly with kelpie watch
 
 sources:
-  # One watched PR: kelpie watch <pr-url> starts this loop for that PR only,
+  # One watched PR: kelpie watch github <pr-url> starts this loop for that PR only,
   # until it is merged or closed or the pane goes away. gh api graphql, not gh
   # pr view: gh pr view drops the [bot] suffix and the actor type, so
   # cursor[bot] would be indistinguishable from a person in the rules.
@@ -239,3 +239,71 @@ sources:
         kind: checks.passed
         summary: '"required checks passed (\(.passed))\(if (.optional_failed | length) > 0 then "; optional failing: \(.optional_failed[:5] | join(", "))" else "" end)"'
         fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+
+  # GitHub notifications of one repo: kelpie watch github owner/repo. Only
+  # page 1, the 50 most recently updated unread threads, with the last
+  # Last-Modified sent as If-Modified-Since. GitHub answers 304 until a thread
+  # is updated after it, and a 304 costs no rate limit. Every new or updated
+  # thread moves latest, the newest updated_at, forward; reading threads never
+  # does, so a thread rising from page 2 into page 1 is not news. Titles are
+  # other people's text and stay out of the prompt: the summary has counts,
+  # reasons and issue or PR numbers.
+  - name: github-inbox
+    adapter: cli
+    every: 60s            # raised to GitHub's X-Poll-Interval when it asks for longer
+    conditional: true
+    for_each: { subjects: "github-inbox:{owner}/{name}" }
+    run: [gh, api, "repos/{owner}/{name}/notifications"]
+    map: |
+      {
+        fields: {
+          repo: "\($parent.owner)/\($parent.name)",
+          latest: (map(.updated_at) | max),
+          threads: map({
+            updated_at, reason,
+            ref: ((.subject.url // "" | capture("/(pulls|issues)/(?<n>[0-9]+)$") | "#\(.n)") // .subject.type)
+          })
+        },
+        url: "https://github.com/notifications?query=repo%3A\($parent.owner)%2F\($parent.name)",
+        fetch: ["gh", "api", "repos/\($parent.owner)/\($parent.name)/notifications"]
+      }
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]    # everything read: keep the newest updated_at seen
+        kind: notifications.new
+        summary: &inbox_summary |
+          [.threads[] | select(.updated_at > ($old.latest // ""))] as $new
+          | "\($new | length) new or updated (\($new | group_by(.reason) | map("\(length) \(.[0].reason | gsub("_"; " "))") | join(", "))): \($new[:5] | map(.ref) | join(", "))\(if ($new | length) > 5 then ", ..." else "" end)"
+        fetch: '["gh", "api", "repos/\(.repo)/notifications\(if $old.latest then "?since=\($old.latest)" else "" end)"]'
+
+  # GitHub notifications of every repo of an org or user: kelpie watch github
+  # <org>. There is no notifications endpoint per org, so this reads page 1 of
+  # all your notifications and keeps the org's threads; the rest works like
+  # github-inbox.
+  - name: github-inbox-org
+    adapter: cli
+    every: 60s
+    conditional: true
+    for_each: { subjects: "github-inbox:{owner}" }
+    run: [gh, api, notifications]
+    map: |
+      map(select(.repository.owner.login | ascii_downcase == ($parent.owner | ascii_downcase))) | {
+        fields: {
+          org: ($parent.owner | ascii_downcase),
+          latest: (map(.updated_at) | max),
+          threads: map({
+            updated_at, reason,
+            ref: (.repository.full_name + ((.subject.url // "" | capture("/(pulls|issues)/(?<n>[0-9]+)$") | "#\(.n)") // " \(.subject.type)"))
+          })
+        },
+        url: "https://github.com/notifications?query=org%3A\($parent.owner)",
+        fetch: ["gh", "api", "notifications", "--jq", "[.[] | select(.repository.owner.login | ascii_downcase == \"\($parent.owner | ascii_downcase)\")]"]
+      }
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]
+        kind: notifications.new
+        summary: *inbox_summary
+        fetch: '["gh", "api", "notifications\(if $old.latest then "?since=\($old.latest)" else "" end)", "--jq", "[.[] | select(.repository.owner.login | ascii_downcase == \"\(.org)\")]"]'

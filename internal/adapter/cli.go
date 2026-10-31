@@ -1,14 +1,20 @@
 package adapter
 
 import (
+	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/textproto"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +41,9 @@ func New(s config.Source) (*CLI, error) {
 	if len(s.Run) == 0 {
 		return nil, fmt.Errorf("source %s: run is required", s.Name)
 	}
+	if s.Conditional && (len(s.Run) < 3 || s.Run[0] != "gh" || s.Run[1] != "api" || slices.Contains(s.Run, "--paginate")) {
+		return nil, fmt.Errorf("source %s: conditional needs run: [gh, api, <endpoint>, ...] without --paginate", s.Name)
+	}
 	m, err := diff.NewMapper(s.Map, s.Slurp)
 	if err != nil {
 		return nil, fmt.Errorf("source %s: %w", s.Name, err)
@@ -43,22 +52,8 @@ func New(s config.Source) (*CLI, error) {
 }
 
 func (c *CLI) Run(ctx context.Context, observe func([]core.Observation), _ func(core.Event)) error {
-	log := slog.With("source", c.source.Name)
-	for {
-		if _, obs, err := c.Once(ctx, nil); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			log.Warn("poll failed", "err", err)
-		} else {
-			observe(obs)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(c.source.Every.Duration):
-		}
-	}
+	c.loop(ctx, nil, observe, func([]core.Observation, error) bool { return true })
+	return ctx.Err()
 }
 
 // Watch starts a for_each loop for parent unless one is already running. The
@@ -76,23 +71,43 @@ func (c *CLI) Watch(ctx context.Context, parent core.Observation, observe func([
 			delete(c.watching, parent.Subject)
 			c.mu.Unlock()
 		}()
-		c.watch(ctx, parent, observe, keep)
+		log := slog.With("source", c.source.Name, "subject", parent.Subject)
+		log.Debug("watch started")
+		defer log.Debug("watch stopped")
+		c.loop(ctx, &parent, observe, keep)
 	}()
 }
 
-func (c *CLI) watch(ctx context.Context, parent core.Observation, observe func([]core.Observation), keep func([]core.Observation, error) bool) {
-	log := slog.With("source", c.source.Name, "subject", parent.Subject)
-	log.Debug("watch started")
-	defer log.Debug("watch stopped")
+// loop polls until ctx ends or keep returns false. A conditional source sends
+// the Last-Modified of its last observed response along; on a 304 nothing is
+// observed and keep sees the previous observations, since nothing changed.
+func (c *CLI) loop(ctx context.Context, parent *core.Observation, observe func([]core.Observation), keep func([]core.Observation, error) bool) {
+	log := slog.With("source", c.source.Name)
+	if parent != nil {
+		log = log.With("subject", parent.Subject)
+	}
+	var (
+		last  []core.Observation
+		since string
+	)
 	for {
-		_, obs, err := c.Once(ctx, &parent)
+		p, err := c.poll(ctx, parent, since)
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil {
-			log.Warn("watch poll failed", "err", err)
-		} else {
+		obs := p.obs
+		switch {
+		case err != nil:
+			log.Warn("poll failed", "err", err)
+		case p.notModified:
+			log.Debug("not modified", "since", since)
+			obs = last
+		default:
+			last = obs
 			observe(obs)
+			// Only once observed: a response that failed to map must come
+			// back on the next poll instead of as a 304.
+			since = cmp.Or(p.lastModified, since)
 		}
 		if !keep(obs, err) {
 			return
@@ -100,7 +115,7 @@ func (c *CLI) watch(ctx context.Context, parent core.Observation, observe func([
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(c.source.Every.Duration):
+		case <-time.After(max(c.source.Every.Duration, p.pollInterval)):
 		}
 	}
 }
@@ -108,12 +123,32 @@ func (c *CLI) watch(ctx context.Context, parent core.Observation, observe func([
 // Once runs the command a single time and returns its raw output too, for
 // kelpie source test and for recording fixtures.
 func (c *CLI) Once(ctx context.Context, parent *core.Observation) ([]byte, []core.Observation, error) {
+	p, err := c.poll(ctx, parent, "")
+	return p.raw, p.obs, err
+}
+
+type poll struct {
+	raw []byte // the response body, without headers for a conditional source
+	obs []core.Observation
+
+	// Conditional sources only.
+	notModified  bool
+	lastModified string
+	pollInterval time.Duration
+}
+
+// poll runs the command once. For a conditional source, since is the
+// Last-Modified to send as If-Modified-Since; empty sends none.
+func (c *CLI) poll(ctx context.Context, parent *core.Observation, since string) (poll, error) {
 	args := c.source.Run
 	if parent != nil {
 		var err error
 		if args, err = expand(args, parent.Fields); err != nil {
-			return nil, nil, err
+			return poll{}, err
 		}
+	}
+	if c.source.Conditional {
+		args = conditional(args, since)
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	if c.source.Stdin != "" {
@@ -121,14 +156,86 @@ func (c *CLI) Once(ctx context.Context, parent *core.Observation) ([]byte, []cor
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), nil, fmt.Errorf("%s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	runErr := cmd.Run()
+
+	p := poll{raw: stdout.Bytes()}
+	if c.source.Conditional {
+		// gh exits 1 on a 304, so the status line decides, not the exit code.
+		resp, err := parseInclude(stdout.Bytes())
+		if err == nil {
+			p.raw = resp.body
+			if s, err := strconv.Atoi(resp.header.Get("X-Poll-Interval")); err == nil {
+				p.pollInterval = time.Duration(s) * time.Second
+			}
+			if resp.status == http.StatusNotModified {
+				p.notModified = true
+				return p, nil
+			}
+			if runErr == nil {
+				p.lastModified = resp.header.Get("Last-Modified")
+			}
+		} else if runErr == nil {
+			return p, err
+		}
 	}
-	obs, err := c.mapper.Map(stdout.Bytes(), parent)
+	if runErr != nil {
+		return p, fmt.Errorf("%s: %w: %s", args[0], runErr, strings.TrimSpace(stderr.String()))
+	}
+	obs, err := c.mapper.Map(p.raw, parent)
 	if err != nil {
-		return stdout.Bytes(), nil, err
+		return p, err
 	}
-	return stdout.Bytes(), obs, graphqlErrors(stdout.Bytes())
+	p.obs = obs
+	return p, graphqlErrors(p.raw)
+}
+
+// conditional asks gh api for the status line and headers with --include,
+// and adds If-Modified-Since once a Last-Modified is known.
+func conditional(args []string, since string) []string {
+	out := []string{args[0], args[1], "--include"}
+	if since != "" {
+		out = append(out, "-H", "If-Modified-Since: "+since)
+	}
+	return append(out, args[2:]...)
+}
+
+type response struct {
+	status int
+	header textproto.MIMEHeader
+	body   []byte
+}
+
+// parseInclude splits gh api --include output: a status line such as
+// "HTTP/2.0 304 Not Modified", the headers, a blank line, then the body.
+func parseInclude(out []byte) (response, error) {
+	br := bufio.NewReader(bytes.NewReader(out))
+	tp := textproto.NewReader(br)
+	line, err := tp.ReadLine()
+	if err != nil || !strings.HasPrefix(line, "HTTP/") {
+		return response{}, fmt.Errorf("gh api --include printed no status line: %q", truncate(line, 80))
+	}
+	_, code, _ := strings.Cut(line, " ")
+	code, _, _ = strings.Cut(code, " ")
+	status, err := strconv.Atoi(code)
+	if err != nil {
+		return response{}, fmt.Errorf("gh api --include status line %q: %w", line, err)
+	}
+	header, err := tp.ReadMIMEHeader()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return response{}, fmt.Errorf("gh api --include headers: %w", err)
+	}
+	body, err := io.ReadAll(br)
+	if err != nil {
+		return response{}, err
+	}
+	return response{status: status, header: header, body: body}, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 var placeholder = regexp.MustCompile(`\{(\w+)\}`)

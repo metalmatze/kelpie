@@ -60,13 +60,18 @@ type Binders struct {
 }
 
 type Source struct {
-	Name        string       `yaml:"name"`
-	Adapter     string       `yaml:"adapter"`
-	Every       Duration     `yaml:"every"`
-	ForEach     *ForEach     `yaml:"for_each"`
-	Run         []string     `yaml:"run"`
-	Stdin       string       `yaml:"stdin"`
-	Slurp       bool         `yaml:"slurp"` // join multiple JSON documents (gh --paginate) into one array
+	Name    string   `yaml:"name"`
+	Adapter string   `yaml:"adapter"`
+	Every   Duration `yaml:"every"`
+	ForEach *ForEach `yaml:"for_each"`
+	Run     []string `yaml:"run"`
+	Stdin   string   `yaml:"stdin"`
+	Slurp   bool     `yaml:"slurp"` // join multiple JSON documents (gh --paginate) into one array
+	// Conditional polls a REST endpoint through gh api with If-Modified-Since
+	// set to the last Last-Modified. A 304 means no change and costs no rate
+	// limit, and GitHub's X-Poll-Interval raises every. Needs run: [gh, api,
+	// ...] without --paginate, because gh would send the header for every page.
+	Conditional bool         `yaml:"conditional"`
 	Map         string       `yaml:"map"`
 	Transitions []Transition `yaml:"transitions"`
 }

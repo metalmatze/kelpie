@@ -115,12 +115,7 @@ func (d *Differ) fire(r rule, o core.Observation, old map[string]any) (core.Even
 			return core.Event{}, false
 		}
 	case r.Increased:
-		if prev == nil {
-			prev = 0.0 // NewSubjectsFire: a count rising from nothing
-		}
-		p, ok1 := number(prev)
-		c, ok2 := number(cur)
-		if !ok1 || !ok2 || c <= p {
+		if !increased(prev, cur) {
 			return core.Event{}, false
 		}
 	case r.Changed:
@@ -201,6 +196,31 @@ func (d *Differ) evalStrings(e *Expr, fields, old map[string]any) ([]string, err
 
 // equal compares by JSON encoding, so a TOML int64 matches a float64 field.
 func equal(a, b any) bool { return compact(a) == compact(b) }
+
+// increased compares numbers, numeric strings and RFC 3339 times, such as the
+// newest updated_at of GitHub notifications. A nil prev is a value rising
+// from nothing: a NewSubjectsFire subject, or a field that was null before.
+func increased(prev, cur any) bool {
+	if c, ok := timestamp(cur); ok {
+		p, ok := timestamp(prev)
+		return prev == nil || ok && c.After(p)
+	}
+	if prev == nil {
+		prev = 0.0
+	}
+	p, ok1 := number(prev)
+	c, ok2 := number(cur)
+	return ok1 && ok2 && c > p
+}
+
+func timestamp(v any) (time.Time, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	return t, err == nil
+}
 
 // number also parses strings, because Slack timestamps ("1761811234.567890")
 // must compare numerically for increased to work.
