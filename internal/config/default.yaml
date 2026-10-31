@@ -22,6 +22,37 @@ rules:
 binders:
   branch: false         # PRs are watched explicitly with kelpie watch
 
+# jq definitions available in every map, summary, actor, fetch and badge.
+defs: |
+  # Check contexts of a commit, bucketed like gh pr checks, keeping only the
+  # newest of re-runs so a check that failed and then passed on re-run is not
+  # failed. Only required checks decide pass or fail; optional failures, such
+  # as a DCO check waiting for a sign-off, are listed apart. A repo without
+  # required checks treats all as required.
+  def checks_summary:
+    def bucket:
+      if .__typename == "StatusContext" then {SUCCESS: "pass", ERROR: "fail", FAILURE: "fail"}[.state] // "pending"
+      elif .status != "COMPLETED" then "pending"
+      else {SUCCESS: "pass", NEUTRAL: "pass", SKIPPED: "skip", CANCELLED: "cancel"}[.conclusion] // "fail" end;
+    [.[] | {
+      key: [.checkSuite.workflowRun.workflow.name, (.name // .context)],
+      at: (.startedAt // .createdAt // ""),
+      name: ((.name // .context) + if .conclusion == "ACTION_REQUIRED" then " (action required)" else "" end),
+      required: .isRequired,
+      bucket: bucket
+    }] | group_by(.key) | map(max_by(.at))
+    | (any(.[]; .required) | not) as $all
+    | map(select(.required or $all)) as $req
+    | ([.[] | select(.bucket == "pending")] | length) as $pending
+    | [$req[] | select(.bucket == "fail") | .name] as $failed
+    | {
+        pending: $pending,
+        failed: $failed,
+        passed: ([$req[] | select(.bucket == "pass")] | length),
+        optional_failed: (if $all then [] else [.[] | select((.required | not) and .bucket == "fail") | .name] end),
+        state: (if length == 0 then "NONE" elif $pending > 0 then "PENDING" elif ($failed | length) > 0 then "FAILURE" else "SUCCESS" end)
+      };
+
 sources:
   # One watched PR: kelpie watch github <pr-url> starts this loop for that PR only,
   # until it is merged or closed or the pane goes away. gh api graphql, not gh
@@ -49,7 +80,13 @@ sources:
               oid
               authors(first: 1) { nodes { user { login } } }
               statusCheckRollup { state contexts(first: 100) { nodes {
-                __typename ... on CheckRun { status } ... on StatusContext { state }
+                __typename
+                ... on CheckRun {
+                  name status conclusion startedAt
+                  isRequired(pullRequestNumber: $number)
+                  checkSuite { workflowRun { workflow { name } } }
+                }
+                ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
               } } }
             } } }
           }
@@ -68,10 +105,10 @@ sources:
           base: .baseRefName,
           head: $commit.oid,
           pusher: ($commit.authors.nodes[0].user.login // ""),
-          # Not the rollup state alone: one failed check makes it FAILURE while
-          # others still run, and github-checks would never start.
-          checks: (if any($commit.statusCheckRollup.contexts.nodes[]?; .status != null and .status != "COMPLETED" or .state == "PENDING" or .state == "EXPECTED")
-            then "PENDING" else ($commit.statusCheckRollup.state // "NONE") end),
+          # Required checks only, like github-checks: GitHub's rollup state turns
+          # FAILURE on any failed check, even an optional one, and stays
+          # FAILURE while the rest still run.
+          checks: ([$commit.statusCheckRollup.contexts.nodes[]?] | checks_summary.state),
           auto_merge: (.autoMergeRequest != null),
           labels: ([.labels.nodes[].name] | sort),
           review_requests: ([.reviewRequests.nodes[].requestedReviewer | (.login // .slug)] | sort),
@@ -82,6 +119,13 @@ sources:
         },
         fetch: ["gh", "pr", "view", (.number | tostring), "-R", "\($parent.owner)/\($parent.name)", "--comments"]
       }
+    # The pane's sidebar label, as herdr's $kelpie token: #482 ✓ approved.
+    badge: |
+      "#\(.number)"
+      + ({PENDING: " ⋯", SUCCESS: " ✓", FAILURE: " ✗"}[.checks] // "")
+      + (if .isDraft then " draft"
+         else {APPROVED: " approved", CHANGES_REQUESTED: " changes requested"}[.reviewDecision // ""] // "" end)
+      + (if .mergeable == "CONFLICTING" then " conflict" else "" end)
     # Checks transitions live in github-checks, which this source starts.
     transitions:
       # Count reviews, not reviewDecision: a second "changes requested" or a
@@ -161,15 +205,11 @@ sources:
         summary: '"closed without merging; kelpie stops watching"'
 
   # What gh pr checks --watch does, as a source: poll one PR every few seconds
-  # while its checks run, bucket each check like gh and keep only the newest
-  # of re-runs, so a check that failed and then passed on re-run is not
-  # reported as failed. GraphQL rather than gh pr checks --json, which lacks
-  # isRequired. Started while github-pr sees checks PENDING; CI that starts
-  # and finishes between two github-pr polls is never seen and reports nothing.
-  #
-  # Only required checks decide pass or fail. Optional failures, such as a DCO
-  # check waiting for a sign-off, ride along in the final message for the
-  # agent to pass on. A repo without required checks treats all as required.
+  # while its checks run (checks_summary in defs). GraphQL rather than gh pr
+  # checks --json, which lacks isRequired. Started while github-pr sees checks
+  # PENDING; CI that starts and finishes between two github-pr polls is never
+  # seen and reports nothing. Optional failures ride along in the final
+  # message for the agent to pass on.
   - name: github-checks
     adapter: cli
     every: 15s
@@ -192,32 +232,16 @@ sources:
         }
       }
     map: |
-      def bucket:
-        if .__typename == "StatusContext" then {SUCCESS: "pass", ERROR: "fail", FAILURE: "fail"}[.state] // "pending"
-        elif .status != "COMPLETED" then "pending"
-        else {SUCCESS: "pass", NEUTRAL: "pass", SKIPPED: "skip", CANCELLED: "cancel"}[.conclusion] // "fail" end;
-      [.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | {
-        key: [.checkSuite.workflowRun.workflow.name, (.name // .context)],
-        at: (.startedAt // .createdAt // ""),
-        name: ((.name // .context) + if .conclusion == "ACTION_REQUIRED" then " (action required)" else "" end),
-        required: .isRequired,
-        bucket: bucket
-      }] | group_by(.key) | map(max_by(.at))
-      | (any(.[]; .required) | not) as $all
-      | map(select(.required or $all)) as $req
-      | ([.[] | select(.bucket == "pending")] | length) as $pending
-      | [$req[] | select(.bucket == "fail") | .name] as $failed
+      [.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]?] | checks_summary
       | { fields: {
           number: $parent.number, repo: $parent.repo,
-          pending: $pending,
-          failed: ($failed | length),
-          failed_checks: $failed,
+          pending, passed, optional_failed,
+          failed: (.failed | length),
+          failed_checks: .failed,
           # Counts only while CI runs, so the last failure, arriving with the
           # end of CI, is reported once, by the final checks.failed.
-          failed_early: (if $pending > 0 then ($failed | length) else 0 end),
-          passed: ([$req[] | select(.bucket == "pass")] | length),
-          optional_failed: (if $all then [] else [.[] | select((.required | not) and .bucket == "fail") | .name] end),
-          checks: (if $pending > 0 then "PENDING" elif ($failed | length) > 0 then "FAILURE" else "SUCCESS" end)
+          failed_early: (if .pending > 0 then (.failed | length) else 0 end),
+          checks: .state
       } }
     transitions:
       # Fires on the first required failure while others still run, like
@@ -267,6 +291,7 @@ sources:
         url: "https://github.com/notifications?query=repo%3A\($parent.owner)%2F\($parent.name)",
         fetch: ["gh", "api", "repos/\($parent.owner)/\($parent.name)/notifications"]
       }
+    badge: '"\(.repo) 🔔\(.threads | length)"'
     transitions:
       - field: latest
         increased: true
@@ -300,6 +325,7 @@ sources:
         url: "https://github.com/notifications?query=org%3A\($parent.owner)",
         fetch: ["gh", "api", "notifications", "--jq", "[.[] | select(.repository.owner.login | ascii_downcase == \"\($parent.owner | ascii_downcase)\")]"]
       }
+    badge: '"\(.org) 🔔\(.threads | length)"'
     transitions:
       - field: latest
         increased: true

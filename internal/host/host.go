@@ -36,6 +36,9 @@ type Host interface {
 	Watch(ctx context.Context, ev Events) error
 	State(ctx context.Context, ws Workspace) (AgentState, error)
 	Deliver(ctx context.Context, ws Workspace, text string) error
+	// Badge shows a short label on the workspace, like herdr's sidebar
+	// token $kelpie. Empty text removes it.
+	Badge(ctx context.Context, ws Workspace, text string) error
 }
 
 // Events receives what a host's Watch observes.

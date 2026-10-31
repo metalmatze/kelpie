@@ -22,7 +22,11 @@ type Config struct {
 	Reminders Reminders `yaml:"reminders"`
 	Rules     Rules     `yaml:"rules"`
 	Binders   Binders   `yaml:"binders"`
-	Sources   []Source  `yaml:"sources"`
+	// Defs are jq function definitions shared by every map, transition
+	// expression and badge, so two sources reading the same GraphQL shape
+	// (github-pr and github-checks) judge it the same way.
+	Defs    string   `yaml:"defs"`
+	Sources []Source `yaml:"sources"`
 }
 
 type Hosts struct {
@@ -74,6 +78,9 @@ type Source struct {
 	Conditional bool         `yaml:"conditional"`
 	Map         string       `yaml:"map"`
 	Transitions []Transition `yaml:"transitions"`
+	// Badge is a jq expression over the fields giving a short label, shown on
+	// the panes watching the subject. Empty: no label.
+	Badge string `yaml:"badge"`
 }
 
 // ForEach runs a source once per subject instead of once for everything, the
@@ -185,8 +192,28 @@ func Parse(data []byte) (*Config, error) {
 		if s.Every.Duration == 0 {
 			cfg.Sources[i].Every = Duration{60 * time.Second}
 		}
+		if cfg.Defs != "" {
+			src := &cfg.Sources[i]
+			for _, e := range []*string{&src.Map, &src.Badge} {
+				*e = withDefs(cfg.Defs, *e)
+			}
+			for j := range src.Transitions {
+				t := &src.Transitions[j]
+				for _, e := range []*string{&t.Summary, &t.Actor, &t.Fetch} {
+					*e = withDefs(cfg.Defs, *e)
+				}
+			}
+		}
 	}
 	return cfg, nil
+}
+
+// withDefs leaves an empty expression empty: empty means "not set".
+func withDefs(defs, expr string) string {
+	if expr == "" {
+		return ""
+	}
+	return defs + "\n" + expr
 }
 
 func (c *Config) Source(name string) (Source, bool) {

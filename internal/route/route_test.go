@@ -30,6 +30,8 @@ func (f *fakeHost) State(context.Context, host.Workspace) (host.AgentState, erro
 	return host.Idle, nil
 }
 
+func (f *fakeHost) Badge(context.Context, host.Workspace, string) error { return nil }
+
 func (f *fakeHost) Deliver(_ context.Context, ws host.Workspace, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

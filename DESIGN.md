@@ -115,6 +115,7 @@ type Host interface {
     Watch(ctx context.Context, changed func()) error // push if the host can, else poll
     State(ctx context.Context, ws Workspace) (AgentState, error)
     Deliver(ctx context.Context, ws Workspace, text string) error
+    Badge(ctx context.Context, ws Workspace, text string) error // empty clears
 }
 ```
 
@@ -126,12 +127,14 @@ type Host interface {
 | Find the agent terminal | the pane itself | `orca terminal list --worktree id:<id> --json` |
 | Change notifications | push: `events.subscribe` on the herdr socket | poll `worktree ps` + `terminal list` every 15 s |
 | Agent state | idle, working, blocked from herdr integrations | `orca terminal wait --for tui-idle --timeout-ms 1000` as an idle probe; no blocked signal confirmed |
+| Badge | `herdr pane report-metadata <pane> --source kelpie --token kelpie=<text>` | none known yet |
 | Deliver | `herdr agent prompt <pane> "<text>"` | `orca terminal send --terminal <handle> --text "<text>" --enter --wait-submit 10 --json` |
 | Explicit watch from inside a workspace | `$HERDR_PANE_ID` | `orca worktree current --json` |
 | Binary | `herdr` | `orca`; on Linux outside Orca terminals `orca-ide`, because bare `orca` is the GNOME screen reader. Honor `ORCA_CLI_COMMAND` when set. |
 
 - **Delivery safety differs.** herdr refuses a prompt (`agent_blocked`) when the agent is waiting at an approval or question. Orca's `terminal send` types regardless, so the Orca adapter only sends after an idle probe succeeds, and queues otherwise.
 - **Orca already links PRs, issues and checks to worktrees,** and supports `issue:<number>` and `branch:<name>` selectors. The branch binder can use those directly.
+- **Badges show what a pane watches.** Each source may set a jq `badge` over its fields (`#482 ✓ approved`, `pyrra 🔔3`). A pane's badge joins those of the subjects it watches plus its reminder count (`⏰2`), as herdr's `$kelpie` token, which shows where the sidebar layout in herdr's `config.toml` lists it. PR checks count required checks only, as in the events. This covers the sidebar labels of the herdr-github plugin for watched PRs, without its polling of every branch. herdr forgets tokens when its server restarts, so kelpie reports them again after every resync, and clears them when it stops.
 - **One socket exception remains.** herdr's CLI has no event-follow verb, so its adapter reads `events.subscribe` (newline-delimited JSON) from the socket the CLI wraps (`$HERDR_SOCKET_PATH`). Everything else on both hosts is CLI.
 
 ## Sources

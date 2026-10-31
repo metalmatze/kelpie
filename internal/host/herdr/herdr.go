@@ -113,6 +113,19 @@ func (h *Herdr) Deliver(ctx context.Context, ws host.Workspace, text string) err
 	return h.run(ctx, nil, "agent", "prompt", ws.ID, text)
 }
 
+// Badge sets the pane token $kelpie, which shows only where the sidebar
+// layout in herdr's config.toml lists it. herdr forgets tokens when its
+// server restarts; the daemon reports them again after a resync.
+func (h *Herdr) Badge(ctx context.Context, ws host.Workspace, text string) error {
+	args := []string{"pane", "report-metadata", ws.ID, "--source", "kelpie"}
+	if text == "" {
+		args = append(args, "--clear-token", "kelpie")
+	} else {
+		args = append(args, "--token", "kelpie="+text)
+	}
+	return h.run(ctx, nil, args...)
+}
+
 type cliError struct {
 	Error struct {
 		Code    string `json:"code"`

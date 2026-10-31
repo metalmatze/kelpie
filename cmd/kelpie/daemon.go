@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -40,6 +41,10 @@ type daemon struct {
 
 	mu       sync.Mutex
 	lastSeen map[string]string // host -> pane IDs at the last resync, to log only changes
+
+	badgeMu sync.Mutex
+	badges  map[core.Subject]string // latest badge per subject, from its source's badge expression
+	shown   map[string]string       // workspace -> badge the host shows, to report only changes
 }
 
 type runner struct {
@@ -48,6 +53,7 @@ type runner struct {
 	d        *diff.Differ
 	pattern  *core.Pattern // for_each.subjects
 	children []*runner     // for_each.source pointing at this runner
+	badge    *diff.Expr
 }
 
 func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
@@ -63,7 +69,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	d := &daemon{ctx: ctx, runners: map[string]*runner{}, lastSeen: map[string]string{}}
+	d := &daemon{ctx: ctx, runners: map[string]*runner{}, lastSeen: map[string]string{}, badges: map[core.Subject]string{}, shown: map[string]string{}}
 	if cfg.Hosts.Herdr.Enabled {
 		d.hosts = append(d.hosts, &herdr.Herdr{Bin: cfg.Hosts.Herdr.Bin, Socket: cfg.Hosts.Herdr.Socket, Poll: cfg.Hosts.Herdr.Poll.Duration})
 	}
@@ -103,6 +109,18 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	})
 	wg.Go(func() { d.sched.Run(ctx) })
+	// Bindings also end without the daemon hearing of it: the router unbinds
+	// after a merged PR's last delivery, a fired one-shot reminder is gone.
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+				d.refreshBadges()
+			}
+		}
+	})
 	for _, h := range d.hosts {
 		wg.Go(func() {
 			err := h.Watch(ctx, d)
@@ -124,6 +142,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		})
 	}
 	wg.Wait()
+	d.clearBadges()
 	return ctx.Err()
 }
 
@@ -138,6 +157,9 @@ func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 			return fmt.Errorf("source %s: %w", s.Name, err)
 		}
 		r := &runner{s: s, a: a, d: df}
+		if r.badge, err = diff.NewExpr(s.Badge); err != nil {
+			return fmt.Errorf("source %s: badge: %w", s.Name, err)
+		}
 		if fe := s.ForEach; fe != nil {
 			switch {
 			case fe.Subjects != "" && fe.Source != "":
@@ -178,6 +200,9 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 		slog.Debug("observed", "source", r.s.Name, "subjects", len(obs))
 		for _, ev := range r.d.Observe(obs) {
 			d.router.Route(ev)
+		}
+		if r.badge != nil {
+			d.setBadges(r, obs)
 		}
 		for _, child := range r.children {
 			while := child.s.ForEach.While
@@ -247,6 +272,7 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 		d.binder.Bind(core.Binding{Subject: subject, Workspace: ws.ID, Via: "explicit", Since: time.Now()})
 	}
 	d.startWatches(subject)
+	d.refreshBadges()
 	slog.Info("watch", "subject", subject, "workspace", ws.ID, "others", resp.Others)
 	return resp, nil
 }
@@ -312,6 +338,7 @@ func (d *daemon) Remind(ctx context.Context, req control.RemindRequest) (core.Re
 	if r, err = d.sched.Add(r); err != nil {
 		return core.Reminder{}, err
 	}
+	d.refreshBadges()
 	slog.Info("remind", "id", r.ID, "workspace", r.Workspace, "due", r.Due, "cron", r.Cron, "subject", r.Subject)
 	return r, nil
 }
@@ -320,6 +347,7 @@ func (d *daemon) Unremind(_ context.Context, id string) error {
 	if err := d.sched.Remove(id); err != nil {
 		return err
 	}
+	d.refreshBadges()
 	slog.Info("unremind", "id", id)
 	return nil
 }
@@ -383,6 +411,7 @@ func (d *daemon) Unwatch(_ context.Context, req control.WatchRequest) error {
 		return fmt.Errorf("pane %s is not watching %s", req.Workspace, subject)
 	}
 	d.binder.Unbind(subject, req.Workspace)
+	d.refreshBadges()
 	slog.Info("unwatch", "subject", subject, "workspace", req.Workspace)
 	return nil
 }
@@ -422,6 +451,16 @@ func (d *daemon) Resync(hostName string, list []host.Workspace) {
 	if changed {
 		slog.Info("workspaces", "host", hostName, "panes", ids)
 	}
+	// A resync follows a reconnect, maybe to a restarted herdr that forgot
+	// every token, so report them all again.
+	d.badgeMu.Lock()
+	for id := range d.shown {
+		if ws, ok := d.binder.Workspace(id); !ok || ws.Host == hostName {
+			delete(d.shown, id)
+		}
+	}
+	d.badgeMu.Unlock()
+	d.refreshBadges()
 }
 
 func (d *daemon) Upsert(ws host.Workspace) {
@@ -449,6 +488,105 @@ func (d *daemon) Move(_, from string, ws host.Workspace) {
 	d.binder.Move(from, ws)
 	d.sched.Move(from, ws.ID)
 	slog.Info("pane moved", "from", from, "to", ws.ID)
+	d.refreshBadges()
+}
+
+// setBadges stores the badge of each observed subject and shows the changes.
+func (d *daemon) setBadges(r *runner, obs []core.Observation) {
+	d.badgeMu.Lock()
+	for _, o := range obs {
+		v, err := r.badge.Eval(o.Fields, nil)
+		text, _ := v.(string)
+		if err != nil {
+			slog.Warn("badge failed", "source", r.s.Name, "subject", o.Subject, "err", err)
+		}
+		d.badges[o.Subject] = text
+	}
+	d.badgeMu.Unlock()
+	d.refreshBadges()
+}
+
+// refreshBadges shows each workspace the badges of what it watches, and how
+// many reminders it has, reporting to the host only what changed.
+func (d *daemon) refreshBadges() {
+	d.badgeMu.Lock()
+	defer d.badgeMu.Unlock()
+	parts := map[string][]string{}
+	watched := map[core.Subject]bool{}
+	for _, bd := range d.binder.AllBindings() {
+		watched[bd.Subject] = true
+		if b := d.badges[bd.Subject]; b != "" {
+			parts[bd.Workspace] = append(parts[bd.Workspace], b)
+		}
+	}
+	for s := range d.badges {
+		if !watched[s] {
+			delete(d.badges, s)
+		}
+	}
+	reminders := map[string]int{}
+	for _, r := range d.sched.List("") {
+		reminders[r.Workspace]++
+	}
+
+	live := map[string]bool{}
+	for _, ws := range d.binder.Workspaces() {
+		live[ws.ID] = true
+		text := badgeText(parts[ws.ID], reminders[ws.ID])
+		if old, ok := d.shown[ws.ID]; ok && old == text || !ok && text == "" {
+			continue
+		}
+		h := d.host(ws.Host)
+		if h == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+		err := h.Badge(ctx, ws, text)
+		cancel()
+		if err != nil {
+			slog.Warn("badge not shown", "workspace", ws.ID, "err", err)
+			continue
+		}
+		slog.Debug("badge", "workspace", ws.ID, "text", text)
+		d.shown[ws.ID] = text
+	}
+	maps.DeleteFunc(d.shown, func(id, _ string) bool { return !live[id] })
+}
+
+func badgeText(parts []string, reminders int) string {
+	slices.Sort(parts)
+	if reminders > 0 {
+		parts = append(parts, fmt.Sprintf("⏰%d", reminders))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// clearBadges removes every badge on shutdown, so no pane shows a watch that
+// nothing runs anymore. d.ctx is done by then.
+func (d *daemon) clearBadges() {
+	d.badgeMu.Lock()
+	defer d.badgeMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for id, text := range d.shown {
+		ws, ok := d.binder.Workspace(id)
+		h := d.host(ws.Host)
+		if !ok || h == nil || text == "" {
+			continue
+		}
+		if err := h.Badge(ctx, ws, ""); err != nil {
+			slog.Warn("badge not cleared", "workspace", id, "err", err)
+		}
+	}
+}
+
+func (d *daemon) host(name string) host.Host {
+	for _, h := range d.hosts {
+		if h.Name() == name {
+			return h
+		}
+	}
+	return nil
 }
 
 func (d *daemon) AgentReady(_, id string) { d.router.Kick(id) }
@@ -466,6 +604,11 @@ func ghLogin(ctx context.Context) string {
 
 // printHost delivers to stdout, for --dry-run against real workspaces.
 type printHost struct{ host.Host }
+
+func (p printHost) Badge(_ context.Context, ws host.Workspace, text string) error {
+	fmt.Printf("--- badge on %s %s: %q\n", ws.Host, ws.ID, text)
+	return nil
+}
 
 func (p printHost) Deliver(_ context.Context, ws host.Workspace, text string) error {
 	fmt.Printf("--- to %s %s (%s)\n%s\n---\n", ws.Host, ws.ID, ws.Path, text)
