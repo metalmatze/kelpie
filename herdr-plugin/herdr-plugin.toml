@@ -2,11 +2,11 @@ id = "kelpie"
 name = "kelpie"
 version = "0.1.0"
 min_herdr_version = "0.9.5"
-description = "Watch pull requests for an agent with a ctrl-click or a key, see what kelpie watches, and keep its daemon running in a workspace of its own. Needs kelpie, gh and jq on PATH."
+description = "Watch pull requests for an agent with a ctrl-click or a key, see what kelpie watches, and keep its daemon running in the kelpie workspace's daemon tab. Needs kelpie, gh and jq on PATH."
 platforms = ["linux", "macos"]
 
-# Starts the daemon in a workspace "kelpie daemon" when none answers, so
-# kelpie runs whenever herdr does. A startup hook may not leave a process
+# Starts the daemon in the tab "daemon" of the workspace "kelpie" when none
+# answers, so kelpie runs whenever herdr does. A startup hook may not leave a process
 # behind, hence the pane.
 [[startup]]
 command = ["bash", "kelpie-plugin.sh", "startup"]

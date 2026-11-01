@@ -30,14 +30,18 @@ watch() {
 case "${1:-}" in
 startup)
 	"$kelpie" status >/dev/null 2>&1 && exit 0
-	# A workspace of its own: a plugin pane opens as a tab in whatever
-	# workspace has focus. herdr restores the workspace with an idle shell
-	# after a restart, so reuse it rather than adding one per start.
-	ws=$("$herdr" workspace list | jq -r '[.result.workspaces[] | select(.label == "kelpie daemon")][0].workspace_id // empty')
+	# In the tab "daemon" of the workspace "kelpie": a plugin pane would open
+	# as a tab of whatever workspace has focus. herdr restores both with an
+	# idle shell after a restart, so reuse them rather than add one per start.
+	ws=$("$herdr" workspace list | jq -r '[.result.workspaces[] | select(.label == "kelpie")][0].workspace_id // empty')
 	if [[ -z "$ws" ]]; then
-		pane=$("$herdr" workspace create --label "kelpie daemon" --cwd "$HOME" --no-focus | jq -r .result.root_pane.pane_id)
+		ws=$("$herdr" workspace create --label kelpie --cwd "$HOME" --no-focus | jq -r .result.workspace.workspace_id)
+	fi
+	tab=$("$herdr" tab list --workspace "$ws" | jq -r '[.result.tabs[] | select(.label == "daemon")][0].tab_id // empty')
+	if [[ -z "$tab" ]]; then
+		pane=$("$herdr" tab create --workspace "$ws" --label daemon --no-focus | jq -r .result.root_pane.pane_id)
 	else
-		pane=$("$herdr" pane list --workspace "$ws" | jq -r '.result.panes[0].pane_id')
+		pane=$("$herdr" pane list --workspace "$ws" | jq -r --arg tab "$tab" '[.result.panes[] | select(.tab_id == $tab)][0].pane_id')
 	fi
 	"$herdr" pane run "$pane" "$kelpie daemon" >/dev/null
 	;;
