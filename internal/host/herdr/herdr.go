@@ -122,8 +122,11 @@ func (h *Herdr) State(ctx context.Context, ws host.Workspace) (host.AgentState, 
 
 // Deliver relies on herdr refusing a blocked agent with agent_blocked before
 // typing anything; a working agent gets the text queued by its own TUI.
+// --wait confirms the agent reacted: working or blocked (asking about the
+// update) ends the wait at once, instead of at the end of the agent's turn.
 func (h *Herdr) Deliver(ctx context.Context, ws host.Workspace, text string) error {
-	return h.run(ctx, nil, "agent", "prompt", ws.ID, text)
+	return h.run(ctx, nil, "agent", "prompt", ws.ID, text,
+		"--wait", "--until", "working", "--until", "blocked", "--timeout", "15000")
 }
 
 // Badge sets the token $kelpie on the pane, and on its herdr workspace the
@@ -221,8 +224,11 @@ func (h *Herdr) run(ctx context.Context, into any, args ...string) error {
 	if err := cmd.Run(); err != nil {
 		var e cliError
 		if json.Unmarshal(stderr.Bytes(), &e) == nil && e.Error.Code != "" {
-			if e.Error.Code == "agent_blocked" {
+			switch e.Error.Code {
+			case "agent_blocked":
 				return host.ErrBlocked
+			case "agent_prompt_stalled", "timeout": // agent prompt --wait
+				return fmt.Errorf("%w: %s", host.ErrUnconfirmed, e.Error.Message)
 			}
 			return fmt.Errorf("herdr %s: %s: %s", strings.Join(args[:2], " "), e.Error.Code, e.Error.Message)
 		}

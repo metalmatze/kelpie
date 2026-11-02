@@ -165,6 +165,16 @@ func (r *Router) flush(id string) {
 	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
 	defer cancel()
 	err := r.hosts[ws.Host].Deliver(ctx, ws, text)
+	if errors.Is(err, host.ErrUnconfirmed) {
+		// Sent, so not retried; the person checks the pane instead.
+		slog.Warn("delivered, but the agent showed no activity", "workspace", id, "err", err)
+		r.notify(ws, host.Notification{
+			Title:    fmt.Sprintf("kelpie: no reaction from %s", wsName(ws)),
+			Body:     fmt.Sprintf("kelpie typed %d updates there, but the agent did not start working on them.", len(items)),
+			NeedsYou: true,
+		})
+		err = nil
+	}
 	if err != nil {
 		if errors.Is(err, host.ErrBlocked) {
 			slog.Info("agent blocked, retrying later", "workspace", id, "retry", r.delivery.Retry.Duration)

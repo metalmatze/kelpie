@@ -30,6 +30,11 @@ const (
 // delivery stays queued and is retried later.
 var ErrBlocked = errors.New("agent is blocked")
 
+// ErrUnconfirmed means the text was submitted but the agent showed no
+// activity afterwards. The text may well be in its terminal, so it is not
+// sent again: a second copy would land in the same input.
+var ErrUnconfirmed = errors.New("agent showed no activity after the prompt")
+
 type Host interface {
 	Name() string
 	Workspaces(ctx context.Context) ([]Workspace, error)
