@@ -7,7 +7,8 @@ hosts:
   orca:
     enabled: false
     bin: ""             # default: $ORCA_CLI_COMMAND, else orca (orca-ide on Linux)
-    poll: 15s
+    poll: 15s           # orca has no event stream
+    comment: false      # show watches as the worktree's comment, replacing yours while any are shown
 
 delivery:
   debounce: 30s

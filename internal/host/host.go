@@ -46,6 +46,11 @@ const (
 // delivery stays queued and is retried later.
 var ErrBlocked = errors.New("agent is blocked")
 
+// ErrBusy means the agent is working and its host cannot hand it text
+// without mixing it into the running turn; the delivery waits until the
+// agent is idle.
+var ErrBusy = errors.New("agent is busy")
+
 // ErrUnconfirmed means the text was submitted but the agent showed no
 // activity afterwards. The text may well be in its terminal, so it is not
 // sent again: a second copy would land in the same input.
@@ -62,12 +67,16 @@ type Host interface {
 	// Badge shows what the workspace watches as a short label, like herdr's
 	// sidebar token $kelpie. A zero Badge removes it.
 	Badge(ctx context.Context, ws Workspace, b Badge) error
-	// Notify shows the person a notification, if the host can.
+	// Notify shows the person a notification. errors.ErrUnsupported lets
+	// another host show it instead.
 	Notify(ctx context.Context, n Notification) error
 }
 
 type Notification struct {
 	Title, Body string
+	// Workspace is the one the notification is about, so a host can point
+	// at it.
+	Workspace Workspace
 	// NeedsYou is a request for the person's attention, not just news.
 	NeedsYou bool
 }

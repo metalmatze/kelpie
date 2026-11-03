@@ -42,6 +42,9 @@ type Orca struct {
 	// where bare orca is the GNOME screen reader.
 	Bin  string   `yaml:"bin"`
 	Poll Duration `yaml:"poll"`
+	// Comment shows what a worktree watches as its Orca comment, replacing
+	// whatever comment it had until nothing is watched anymore.
+	Comment bool `yaml:"comment"`
 }
 
 type Herdr struct {

@@ -21,6 +21,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/host"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
+	"github.com/metalmatze/kelpie/internal/host/orca"
 	"github.com/metalmatze/kelpie/internal/route"
 	"github.com/metalmatze/kelpie/internal/schedule"
 	"github.com/metalmatze/kelpie/internal/state"
@@ -72,6 +73,9 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	d := &daemon{ctx: ctx, runners: map[string]*runner{}, lastSeen: map[string]string{}, badges: map[core.Subject]string{}, shown: map[string]string{}}
 	if cfg.Hosts.Herdr.Enabled {
 		d.hosts = append(d.hosts, &herdr.Herdr{Bin: cfg.Hosts.Herdr.Bin, Socket: cfg.Hosts.Herdr.Socket, Poll: cfg.Hosts.Herdr.Poll.Duration})
+	}
+	if o := cfg.Hosts.Orca; o.Enabled {
+		d.hosts = append(d.hosts, &orca.Orca{Bin: o.Bin, Poll: o.Poll.Duration, Comment: o.Comment})
 	}
 	if len(d.hosts) == 0 {
 		return errors.New("no host enabled")

@@ -176,8 +176,8 @@ func (r *Router) flush(id string) {
 		err = nil
 	}
 	if err != nil {
-		if errors.Is(err, host.ErrBlocked) {
-			slog.Info("agent blocked, retrying later", "workspace", id, "retry", r.delivery.Retry.Duration)
+		if errors.Is(err, host.ErrBlocked) || errors.Is(err, host.ErrBusy) {
+			slog.Info("agent not ready, retrying later", "workspace", id, "err", err, "retry", r.delivery.Retry.Duration)
 		} else {
 			slog.Warn("delivery failed, retrying later", "workspace", id, "err", err, "retry", r.delivery.Retry.Duration)
 		}
@@ -194,9 +194,12 @@ func (r *Router) flush(id string) {
 		r.schedule(id, q, r.delivery.Retry.Duration)
 		r.mu.Unlock()
 		if tell {
-			why := "its agent is waiting at a question or approval"
-			if !errors.Is(err, host.ErrBlocked) {
-				why = err.Error()
+			why := err.Error()
+			switch {
+			case errors.Is(err, host.ErrBlocked):
+				why = "its agent is waiting at a question or approval"
+			case errors.Is(err, host.ErrBusy):
+				why = "its agent has been working all along"
 			}
 			r.notify(ws, host.Notification{
 				Title:    fmt.Sprintf("kelpie: %d updates waiting for %s", waiting, wsName(ws)),
@@ -228,10 +231,26 @@ func (r *Router) flush(id string) {
 	}
 }
 
+// notify tells the person through the workspace's host, else through any
+// other host that can: the notification is for the person, who sees every
+// host, not for the agent.
 func (r *Router) notify(ws host.Workspace, n host.Notification) {
 	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
 	defer cancel()
-	if err := r.hosts[ws.Host].Notify(ctx, n); err != nil {
+	n.Workspace = ws
+	err := r.hosts[ws.Host].Notify(ctx, n)
+	for name, h := range r.hosts {
+		if !errors.Is(err, errors.ErrUnsupported) {
+			break
+		}
+		if name != ws.Host {
+			err = h.Notify(ctx, n)
+		}
+	}
+	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+		slog.Debug("no host can show notifications", "workspace", ws.ID, "title", n.Title)
+	case err != nil:
 		slog.Warn("notification failed", "workspace", ws.ID, "err", err)
 	}
 }

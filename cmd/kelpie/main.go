@@ -22,6 +22,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/host"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
+	"github.com/metalmatze/kelpie/internal/host/orca"
 	"github.com/metalmatze/kelpie/internal/state"
 )
 
@@ -62,19 +63,36 @@ func main() {
 	}
 }
 
-// callers detect the workspace a command runs in, one per host.
-var callers = []func() (string, bool){herdr.Caller}
+// callers detect the workspace a command runs in, one per host, keyed by
+// the TERM_PROGRAM the host sets.
+var callers = []struct {
+	term   string
+	detect func() (string, bool)
+}{
+	{"orca", orca.Caller},
+	{"herdr", herdr.Caller},
+}
 
 // callerWorkspace is the workspace given with --workspace, else the pane or
-// terminal the command runs in.
+// terminal the command runs in. Hosts pass their variables on to whatever
+// they start: the Orca app launched from a herdr pane gives every Orca
+// terminal that pane's HERDR_PANE_ID. When several hosts' variables are
+// set, TERM_PROGRAM names the innermost terminal.
 func callerWorkspace(flag string) (string, error) {
 	if flag != "" {
 		return flag, nil
 	}
-	for _, detect := range callers {
-		if id, ok := detect(); ok {
-			return id, nil
+	var found []string
+	for _, c := range callers {
+		if id, ok := c.detect(); ok {
+			if strings.EqualFold(os.Getenv("TERM_PROGRAM"), c.term) {
+				return id, nil
+			}
+			found = append(found, id)
 		}
+	}
+	if len(found) > 0 {
+		return found[0], nil
 	}
 	return "", errors.New("not inside a herdr pane or an Orca terminal; pass --workspace <id as kelpie status lists it>")
 }
