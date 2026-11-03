@@ -3,17 +3,13 @@ Description=kelpie daemon: routes SDLC events to coding agents
 # No After=: default.target already orders after what it wants, so After= on
 # it would be a cycle. A user manager cannot order against the system's
 # network-online.target; the daemon retries failed polls itself.
-# Never give up: transient failures at login (network, herdr not up yet) must
-# not leave the unit failed for good. RestartSec keeps the retry slow, the same
-# 30 s launchd's ThrottleInterval gives.
-StartLimitIntervalSec=0
 
 [Service]
 ExecStart={{unit .Binary}} --config {{unit .Config}} daemon
 {{- range .Env}}
 Environment={{env (printf "%s=%s" .Name .Value)}}
 {{- end}}
-# Exit 0 means another daemon owns the socket (e.g. the herdr plugin started
+# Exit 0 means another daemon holds the lock (e.g. the herdr plugin started
 # one first); only a failure is worth a restart.
 Restart=on-failure
 RestartSec=30

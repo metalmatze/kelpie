@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/metalmatze/kelpie/internal/adapter"
@@ -60,14 +58,9 @@ type runner struct {
 }
 
 func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
-	level := slog.LevelInfo
 	if c.Debug {
-		level = slog.LevelDebug
+		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
-	// Warnings repeat every poll while herdr is down; see dedupeHandler. Not
-	// wrapping slog.Default().Handler(): once that is installed as default,
-	// its output loops back into itself and the daemon deadlocks at startup.
-	slog.SetDefault(slog.New(newDedupeHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}), 15*time.Minute)))
 
 	// An exclusive flock is the single-instance guard. The herdr hook and a
 	// launchd/systemd unit start nearly together at login, and a probe of the
@@ -75,8 +68,8 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	// would be delivered twice. The kernel drops the lock when the process
 	// dies, so a crash leaves nothing stale. Exit 0 when held: a unit that
 	// restarts on failure must not loop against the daemon the hook started.
-	lock, err := lockDaemon()
-	if errors.Is(err, errLocked) {
+	lock, err := control.Lock()
+	if errors.Is(err, control.ErrLocked) {
 		fmt.Printf("kelpie daemon already running (socket %s); exiting\n", control.SocketPath())
 		return nil
 	}
@@ -94,15 +87,11 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	starting := &startingHandler{ready: make(chan struct{})}
 	// With the lock held, a failure here is real: exit non-zero rather than
 	// run unreachable, so a unit restarts the daemon and the hook's status
-	// check stays truthful. The exception is a daemon from before the flock
-	// that still owns the socket: step aside like errLocked, or the unit
-	// would loop against it.
+	// check stays truthful.
 	var serveErr error
 	wg.Go(func() {
 		if serveErr = control.Serve(ctx, control.SocketPath(), starting); serveErr != nil {
-			if !errors.Is(serveErr, control.ErrRunning) {
-				slog.Error("control socket failed", "err", serveErr)
-			}
+			slog.Error("control socket failed", "err", serveErr)
 			cancel()
 		}
 	})
@@ -191,93 +180,10 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	}
 	wg.Wait()
 	d.clearBadges()
-	if errors.Is(serveErr, control.ErrRunning) {
-		fmt.Printf("kelpie daemon already running (socket %s); exiting\n", control.SocketPath())
-		return nil
-	}
 	if serveErr != nil {
 		return serveErr
 	}
 	return ctx.Err()
-}
-
-var errLocked = errors.New("daemon lock is held")
-
-func lockDaemon() (*os.File, error) {
-	if err := os.MkdirAll(control.StateDir(), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(filepath.Join(control.StateDir(), "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, errLocked
-		}
-		return nil, err
-	}
-	return f, nil
-}
-
-// startingHandler serves the control socket while the daemon is still
-// starting. Status answers at once with nothing, which is all a liveness check
-// needs; commands that act on the daemon's state wait until it is set.
-type startingHandler struct {
-	ready chan struct{}
-	d     *daemon
-}
-
-func (s *startingHandler) set(d *daemon) {
-	s.d = d
-	close(s.ready)
-}
-
-func (s *startingHandler) wait(ctx context.Context) error {
-	select {
-	case <-s.ready:
-		return nil
-	case <-ctx.Done():
-		return errors.New("kelpie daemon is still starting")
-	}
-}
-
-func (s *startingHandler) Watch(ctx context.Context, req control.WatchRequest) (control.WatchResponse, error) {
-	if err := s.wait(ctx); err != nil {
-		return control.WatchResponse{}, err
-	}
-	return s.d.Watch(ctx, req)
-}
-
-func (s *startingHandler) Unwatch(ctx context.Context, req control.WatchRequest) error {
-	if err := s.wait(ctx); err != nil {
-		return err
-	}
-	return s.d.Unwatch(ctx, req)
-}
-
-func (s *startingHandler) Remind(ctx context.Context, req control.RemindRequest) (core.Reminder, error) {
-	if err := s.wait(ctx); err != nil {
-		return core.Reminder{}, err
-	}
-	return s.d.Remind(ctx, req)
-}
-
-func (s *startingHandler) Unremind(ctx context.Context, id string) error {
-	if err := s.wait(ctx); err != nil {
-		return err
-	}
-	return s.d.Unremind(ctx, id)
-}
-
-func (s *startingHandler) Status(ctx context.Context) control.Status {
-	select {
-	case <-s.ready:
-		return s.d.Status(ctx)
-	default:
-		return control.Status{}
-	}
 }
 
 func (d *daemon) buildRunners(sources []config.Source, st state.State) error {

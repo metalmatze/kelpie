@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
+	"runtime"
 
 	"github.com/metalmatze/kelpie/internal/service"
 )
@@ -21,27 +21,17 @@ type ServiceFlags struct {
 
 type ServiceInstallCmd struct {
 	ServiceFlags
-	Print bool   `help:"Print the unit instead of writing and loading it; save it by hand to install manually."`
-	OS    string `help:"Render for this OS (darwin or linux) instead of this one. Only with --print." enum:",darwin,linux" default:""`
+	Print bool `help:"Print the unit instead of writing and loading it; save it by hand to install manually."`
 }
 
 func (c *ServiceInstallCmd) Help() string {
-	return `The unit bakes in this kelpie binary's path, --config, and the PATH and XDG_* variables of this shell, so gh, herdr and orca resolve as they do in your terminal. The unit keeps the PATH it was installed with, so run install again after it changes (a new tool directory, a moved fnm or nvm shim).
-
-It coexists with the herdr plugin: whichever starts the daemon second finds the lock held and exits 0. The unit restarts only on failure, so if the plugin's daemon started first, the unit's stays stopped until the next login.
+	return `The unit bakes in this kelpie binary's path, --config, and the PATH and XDG_* variables of this shell, so gh, herdr and orca resolve as they do in your terminal. Run install again after PATH changes.
 
 On Linux the service starts with your login session. To run without one: loginctl enable-linger $USER.`
 }
 
 func (c *ServiceInstallCmd) Run(ctx context.Context, g *Globals) error {
-	goos := service.Current
-	if c.OS != "" {
-		if !c.Print {
-			return errors.New("--os only works with --print")
-		}
-		goos = c.OS
-	}
-	s, err := service.New(goos, c.Label, g.Config, os.Stdout)
+	s, err := service.New(runtime.GOOS, c.Label, g.Config, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -59,7 +49,7 @@ func (c *ServiceInstallCmd) Run(ctx context.Context, g *Globals) error {
 type ServiceUninstallCmd struct{ ServiceFlags }
 
 func (c *ServiceUninstallCmd) Run(ctx context.Context, g *Globals) error {
-	s, err := service.New(service.Current, c.Label, g.Config, os.Stdout)
+	s, err := service.New(runtime.GOOS, c.Label, g.Config, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -69,7 +59,7 @@ func (c *ServiceUninstallCmd) Run(ctx context.Context, g *Globals) error {
 type ServiceStatusCmd struct{ ServiceFlags }
 
 func (c *ServiceStatusCmd) Run(ctx context.Context, g *Globals) error {
-	s, err := service.New(service.Current, c.Label, g.Config, os.Stdout)
+	s, err := service.New(runtime.GOOS, c.Label, g.Config, os.Stdout)
 	if err != nil {
 		return err
 	}

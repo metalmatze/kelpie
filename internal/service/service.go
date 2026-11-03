@@ -1,7 +1,7 @@
 // Package service installs the kelpie daemon as a launchd LaunchAgent (macOS)
 // or a systemd user unit (Linux), so it runs without herdr's plugin starting
-// it. Both coexist with the plugin: the daemon's control socket is the lock,
-// and whoever starts second exits 0.
+// it. Both coexist with the plugin: the daemon's flock admits one copy, and
+// whoever starts second exits 0.
 package service
 
 import (
@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"text/template"
@@ -116,11 +115,43 @@ func binary() (string, error) {
 func environment() []EnvVar {
 	var env []EnvVar
 	for _, name := range []string{"PATH", "XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
-		if v := os.Getenv(name); v != "" {
+		v := os.Getenv(name)
+		if name == "PATH" {
+			v = stablePath(v)
+		}
+		if v != "" {
 			env = append(env, EnvVar{name, v})
 		}
 	}
 	return env
+}
+
+// stablePath drops PATH entries that will not outlive this shell: fnm and
+// similar tools put a per-shell directory in front, which vanishes once the
+// installing shell exits and would leave the unit with a dead entry.
+func stablePath(path string) string {
+	volatile := []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"}
+	seen := map[string]bool{}
+	var keep []string
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) || seen[dir] || strings.Contains(dir, "/fnm_multishells/") {
+			continue
+		}
+		seen[dir] = true
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		tmp := false
+		for _, v := range volatile {
+			if dir == v || strings.HasPrefix(dir, strings.TrimSuffix(v, "/")+"/") {
+				tmp = true
+			}
+		}
+		if !tmp {
+			keep = append(keep, dir)
+		}
+	}
+	return strings.Join(keep, string(os.PathListSeparator))
 }
 
 func (s *Service) Render() ([]byte, error) {
@@ -128,7 +159,7 @@ func (s *Service) Render() ([]byte, error) {
 	if s.GOOS == "darwin" {
 		src = launchdTmpl
 	}
-	t, err := template.New("unit").Funcs(template.FuncMap{"xml": xmlEscape, "unit": systemdQuote, "env": systemdEnvQuote}).Parse(src)
+	t, err := template.New("unit").Funcs(template.FuncMap{"unit": systemdQuote, "env": systemdEnvQuote}).Parse(src)
 	if err != nil {
 		return nil, err
 	}
@@ -137,23 +168,6 @@ func (s *Service) Render() ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
-}
-
-func xmlEscape(s string) string {
-	var b bytes.Buffer
-	for _, r := range s {
-		switch r {
-		case '&':
-			b.WriteString("&amp;")
-		case '<':
-			b.WriteString("&lt;")
-		case '>':
-			b.WriteString("&gt;")
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // systemdQuote makes s one word of an ExecStart= line. Always quoted: a path
@@ -293,61 +307,22 @@ func (s *Service) active(ctx context.Context) bool {
 }
 
 func (s *Service) Status(ctx context.Context) error {
-	_, err := os.Stat(s.Unit)
-	exists := err == nil
-	if s.GOOS == "linux" {
-		return s.statusLinux(ctx, exists)
-	}
-	loaded := s.loaded(ctx)
-	switch {
-	case !exists && !loaded:
+	if _, err := os.Stat(s.Unit); err != nil {
 		fmt.Fprintf(s.Out, "not installed (no %s); run kelpie service install\n", s.Unit)
 		return nil
-	case !exists:
-		fmt.Fprintf(s.Out, "unit:   missing (%s), but the job is still loaded; kelpie service uninstall unloads it\n", s.Unit)
-	default:
-		fmt.Fprintf(s.Out, "unit:   %s\n", s.Unit)
 	}
-	fmt.Fprintf(s.Out, "logs:   %s\n", s.Spec.Log)
-	if !loaded {
-		fmt.Fprintln(s.Out, "state:  not loaded; run kelpie service install")
-		return nil
+	fmt.Fprintf(s.Out, "unit:   %s\n", s.Unit)
+	var cmd *exec.Cmd
+	if s.GOOS == "darwin" {
+		fmt.Fprintf(s.Out, "logs:   %s\n", s.Spec.Log)
+		cmd = exec.CommandContext(ctx, "launchctl", "list", s.Spec.Label)
+	} else {
+		name := s.Spec.Label + ".service"
+		fmt.Fprintln(s.Out, "logs:   journalctl --user -u "+name)
+		cmd = exec.CommandContext(ctx, "systemctl", "--user", "status", "--no-pager", name)
 	}
-	out, err := exec.CommandContext(ctx, "launchctl", "print", s.target()).Output()
-	if err != nil {
-		return err
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		// One tab of indent is the job's own fields; deeper lines belong to
-		// nested blocks (endpoints, event triggers) that also have a state.
-		line, ok := strings.CutPrefix(line, "\t")
-		if !ok || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		for _, key := range []string{"state = ", "pid = ", "runs = ", "last exit code = "} {
-			if strings.HasPrefix(line, key) {
-				fmt.Fprintf(s.Out, "%-7s %s\n", strings.TrimSuffix(key, " = ")+":", strings.TrimPrefix(line, key))
-			}
-		}
-	}
-	return nil
-}
-
-func (s *Service) statusLinux(ctx context.Context, exists bool) error {
-	name := s.Spec.Label + ".service"
-	switch {
-	case !exists && !s.active(ctx):
-		fmt.Fprintf(s.Out, "not installed (no %s); run kelpie service install\n", s.Unit)
-		return nil
-	case !exists:
-		fmt.Fprintf(s.Out, "unit:   missing (%s), but %s is still running; kelpie service uninstall stops it\n", s.Unit, name)
-	default:
-		fmt.Fprintf(s.Out, "unit:   %s\n", s.Unit)
-	}
-	fmt.Fprintln(s.Out, "logs:   journalctl --user -u "+name)
-	cmd := exec.CommandContext(ctx, "systemctl", "--user", "status", "--no-pager", name)
 	cmd.Stdout = s.Out
-	// A stopped unit exits non-zero; its output is the answer.
+	// An unloaded or stopped job exits non-zero; its output is the answer.
 	_ = cmd.Run()
 	return nil
 }
@@ -359,7 +334,3 @@ func run(ctx context.Context, name string, args ...string) error {
 	}
 	return nil
 }
-
-// Current is runtime.GOOS, a variable so --os can render the other platform's
-// unit for review.
-var Current = runtime.GOOS

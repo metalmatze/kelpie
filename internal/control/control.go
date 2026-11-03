@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/metalmatze/kelpie/internal/core"
@@ -30,6 +31,29 @@ func StateDir() string {
 }
 
 func SocketPath() string { return filepath.Join(StateDir(), "kelpie.sock") }
+
+var ErrLocked = errors.New("daemon lock is held")
+
+// Lock takes the exclusive flock that makes one daemon per state dir. The
+// returned file holds it: the lock lasts until the file closes or the process
+// dies. ErrLocked means another daemon has it.
+func Lock() (*os.File, error) {
+	if err := os.MkdirAll(StateDir(), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(StateDir(), "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, ErrLocked
+		}
+		return nil, err
+	}
+	return f, nil
+}
 
 type WatchRequest struct {
 	Subject   core.Subject `json:"subject"`
@@ -68,14 +92,8 @@ type Handler interface {
 	Status(ctx context.Context) Status
 }
 
-// ErrRunning is Serve's answer when another daemon already answers on the
-// socket. The daemon's flock normally prevents it; it still happens when a
-// daemon from before the flock owns the socket, and the caller should step
-// aside rather than fail.
-var ErrRunning = errors.New("another kelpie daemon is running")
-
-// Serve listens on path until ctx ends, or returns ErrRunning if another
-// daemon answers on it.
+// Serve listens on path until ctx ends. If another daemon already answers on
+// it, Serve refuses to start.
 func Serve(ctx context.Context, path string, h Handler) error {
 	// sun_path is 104 bytes on macOS, 108 on Linux; bind fails with a bare
 	// "invalid argument" past that.
@@ -83,7 +101,7 @@ func Serve(ctx context.Context, path string, h Handler) error {
 		return fmt.Errorf("socket path %s is too long for a unix socket (%d bytes, max 103); use a shorter XDG_STATE_HOME", path, len(path))
 	}
 	if _, err := NewClient(path).Status(ctx); err == nil {
-		return fmt.Errorf("%w on %s", ErrRunning, path)
+		return fmt.Errorf("another kelpie daemon is running on %s", path)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
