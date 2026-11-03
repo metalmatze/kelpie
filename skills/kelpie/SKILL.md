@@ -5,24 +5,24 @@ description: Watch a GitHub PR or a repo's or org's GitHub notifications with ke
 
 # kelpie
 
-kelpie is a daemon that polls the pull requests and notification inboxes this session watches and types a short `[kelpie]` update into this agent's herdr pane when something happens. It also types reminders this session set back into the pane when they are due. It never acts on a PR or marks a notification read; you do.
+kelpie is a daemon that polls the pull requests and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, or the agent's terminal in an Orca worktree. It also types reminders this session set back into it when they are due. It never acts on a PR or marks a notification read; you do.
 
 ## Offer a watch
 
 When a PR comes up (you opened it, or the user linked or named one to work on):
 
-1. Check `$HERDR_PANE_ID` is set. kelpie reaches this session only through herdr; without it, tell the user kelpie cannot reach this session and stop.
+1. Check `$HERDR_PANE_ID` or `$ORCA_WORKTREE_ID` is set. kelpie reaches this session only through a herdr pane or an Orca worktree; without either, tell the user kelpie cannot reach this session and stop. kelpie names this session's workspace by the pane ID in herdr, and by `orca:$ORCA_WORKTREE_ID` in Orca; "this pane" below means that workspace.
 2. Run `kelpie status`. If it lists the PR for this pane, it is already watched: stop. Other panes watching the same PR do not matter: each pane gets its own updates.
 3. Ask once with AskUserQuestion: "Watch owner/repo#N with kelpie?", options "Watch" and "Not now". "Not now" holds for this PR for the rest of the conversation; offer again only if the user brings it up.
 4. On "Watch", run `kelpie watch github <pr-url>`. Done when it prints `watching <subject>`.
 
 If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. Report any other error as is.
 
-The watch ends by itself when the PR is merged or closed, or when this pane closes. `kelpie unwatch github <pr-url>` ends it early, for this pane only.
+The watch ends by itself when the PR is merged or closed, or when this pane closes (in Orca: when the worktree is removed or archived). `kelpie unwatch github <pr-url>` ends it early, for this pane only.
 
 ## Watch notifications
 
-When the user wants this session to follow a repo's or an org's GitHub notifications (review requests, mentions, comments on threads they follow), with the same `$HERDR_PANE_ID` and "daemon is not running" rules as above:
+When the user wants this session to follow a repo's or an org's GitHub notifications (review requests, mentions, comments on threads they follow), with the same `$HERDR_PANE_ID` or `$ORCA_WORKTREE_ID` and "daemon is not running" rules as above:
 
 1. Run `kelpie status`. A `github-inbox:owner/repo` or `github-inbox:org` line for this pane means it is already watched: stop.
 2. Run `kelpie watch github <owner/repo>` for a repo, `kelpie watch github <org>` for every repo of an org, or `kelpie watch github` alone for the repo of the current directory. Done when it prints `watching github-inbox:...`.
@@ -31,7 +31,7 @@ Only notifications that arrive or are updated after the watch starts count; the 
 
 ## Set a reminder
 
-When the user asks to follow up later ("check the PR again tomorrow at 10", "retry in an hour", "every weekday at 9, look at the inbox"), set a reminder instead of waiting. The same `$HERDR_PANE_ID` and "daemon is not running" rules as above apply.
+When the user asks to follow up later ("check the PR again tomorrow at 10", "retry in an hour", "every weekday at 9, look at the inbox"), set a reminder instead of waiting. The same `$HERDR_PANE_ID` or `$ORCA_WORKTREE_ID` and "daemon is not running" rules as above apply.
 
 1. Turn the user's words into one flag. kelpie parses no natural language:
    - `--in 1h`: a duration from now.
