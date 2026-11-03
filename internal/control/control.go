@@ -68,8 +68,14 @@ type Handler interface {
 	Status(ctx context.Context) Status
 }
 
-// Serve listens on path until ctx ends. The socket doubles as the daemon's
-// lock: if another daemon answers on it, Serve refuses to start.
+// ErrRunning is Serve's answer when another daemon already answers on the
+// socket. The daemon's flock normally prevents it; it still happens when a
+// daemon from before the flock owns the socket, and the caller should step
+// aside rather than fail.
+var ErrRunning = errors.New("another kelpie daemon is running")
+
+// Serve listens on path until ctx ends, or returns ErrRunning if another
+// daemon answers on it.
 func Serve(ctx context.Context, path string, h Handler) error {
 	// sun_path is 104 bytes on macOS, 108 on Linux; bind fails with a bare
 	// "invalid argument" past that.
@@ -77,7 +83,7 @@ func Serve(ctx context.Context, path string, h Handler) error {
 		return fmt.Errorf("socket path %s is too long for a unix socket (%d bytes, max 103); use a shorter XDG_STATE_HOME", path, len(path))
 	}
 	if _, err := NewClient(path).Status(ctx); err == nil {
-		return fmt.Errorf("another kelpie daemon is running on %s", path)
+		return fmt.Errorf("%w on %s", ErrRunning, path)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
