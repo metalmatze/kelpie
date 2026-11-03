@@ -41,6 +41,7 @@ type CLI struct {
 	Status    StatusCmd    `cmd:"" help:"List watches, reminders and queued updates."`
 	Daemon    DaemonCmd    `cmd:"" help:"Watch sources and deliver updates to agents."`
 	Init      InitCmd      `cmd:"" help:"Write the default config, unless one exists."`
+	Service   ServiceCmd   `cmd:"" help:"Run the daemon at login as a launchd or systemd service."`
 	Source    struct {
 		Test SourceTestCmd `cmd:"" help:"Run one source once and print its observations."`
 	} `cmd:"" help:"Inspect configured sources."`

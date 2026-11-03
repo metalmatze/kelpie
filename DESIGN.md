@@ -497,7 +497,11 @@ kelpie doctor                    # CLIs on PATH, auth, MCP sessions, hosts, last
 | `kelpie source test <name>` | run one source once; print raw output, observations and events |
 | `kelpie source record <name>` | save raw output as a test fixture |
 
-**Daemon lifecycle.** The herdr plugin (`herdr-plugin/`, `herdr plugin link herdr-plugin`) starts `kelpie daemon` when herdr starts and no daemon answers, in the tab "daemon" of the workspace "kelpie", both reused after herdr restores its session and created when missing. The control socket doubles as the lock, so a second copy refuses to start. Without herdr, launchd or a systemd user unit would do the same.
+**Daemon lifecycle.** The herdr plugin (`herdr-plugin/`, `herdr plugin link herdr-plugin`) starts `kelpie daemon` when herdr starts and no daemon answers, in the tab "daemon" of the workspace "kelpie", both reused after herdr restores its session and created when missing. The daemon holds an exclusive flock on `daemon.lock` next to the socket (the kernel drops it when the process dies, so there is no stale lock), and a second copy prints "already running" and exits 0. A socket check alone raced when the hook and a unit start together at login. The control socket answers before the slow startup work (gh, herdr, sources), so the hook's "no daemon answers" check does not start a second daemon meanwhile; `status` answers empty until the daemon is ready. Without herdr, or to not depend on it, `kelpie service install` runs the daemon as a launchd LaunchAgent (`~/Library/LaunchAgents/<label>.plist`, log `~/Library/Logs/<label>.log`) or a systemd user unit (log in journald), and `uninstall` and `status` undo and inspect it.
+
+A command rather than documented steps because neither supervisor sees the login shell: launchd expands no `~` or `$HOME`, and a unit has no `PATH` of the person's terminal, so `gh`, `herdr` and `orca` would not resolve. Install bakes in the invoked binary path (not symlink-resolved, so a rebuild is picked up), `--config`, the installer's `PATH` and `XDG_*` dirs (the socket must be where `kelpie status` looks); re-run it after any of them changes. It also gets the `launchctl bootstrap gui/$UID` dance right on reinstall. `--print` renders the unit without writing or loading it, for review or manual install. `loginctl enable-linger` is only needed on Linux to run without a login session.
+
+**Coexistence.** The flock is the lock: a daemon that finds it held exits 0, so whichever of unit and plugin starts first wins and the other steps aside. Units restart only on failure (launchd `KeepAlive` `SuccessfulExit=false`, systemd `Restart=on-failure`): a crash or `kill -9` restarts, at most every 30 s (launchd `ThrottleInterval`) or after 30 s (systemd `RestartSec`), forever, while SIGTERM, or another daemon holding the lock, leaves it stopped until the next login. If herdr is down at login the daemon keeps polling its hosts and logs the failure once per 15 minutes until herdr answers.
 
 **herdr plugin.** Besides the daemon it adds three ways in that skip the agent: ctrl-click on a PR link watches it for the pane it was clicked in, `kelpie.watch-pr` watches the PR of the focused pane's branch (`gh pr view` in its directory), and `kelpie.status` opens `kelpie status` in a popup. Actions have no terminal, so they answer with a herdr notification.
 
@@ -519,6 +523,7 @@ internal/diff/        snapshot diff + transition rules, jq mapping (gojq)
 internal/bind/        branch, link, k8s, deploy, explicit binders + confirmation queue
 internal/route/       rules, debounce, batching, message rendering
 internal/schedule/    reminders: due times, cron parsing, catch-up, reminder.due events
+internal/service/     kelpie service: launchd and systemd unit templates, install
 internal/state/       State interface + in-memory implementation (persistence later)
 sources/              shipped source configs: github.yaml, slack.yaml, linear.yaml, k8s.yaml, prometheus.yaml
 queries/              GraphQL files used by gh api

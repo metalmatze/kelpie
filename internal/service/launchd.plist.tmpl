@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{{xml .Label}}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{xml .Binary}}</string>
+		<string>--config</string>
+		<string>{{xml .Config}}</string>
+		<string>daemon</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+{{- range .Env}}
+		<key>{{xml .Name}}</key>
+		<string>{{xml .Value}}</string>
+{{- end}}
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Exit 0 means another daemon owns the socket (e.g. the herdr plugin
+	     started one first); only a failure is worth a restart. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<!-- gh keeps its token in the login keychain, which only the GUI login
+	     session can unlock. -->
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<!-- The daemon mostly sleeps between polls; Background keeps it from
+	     competing with the person's foreground work. -->
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>{{xml .Log}}</string>
+	<key>StandardErrorPath</key>
+	<string>{{xml .Log}}</string>
+</dict>
+</plist>
