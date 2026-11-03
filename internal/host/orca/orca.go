@@ -39,10 +39,14 @@ type Orca struct {
 	// back the person's comment instead of taking its own badge for it.
 	CommentsFile string
 
-	mu       sync.Mutex
-	repos    map[string]cachedRepos     // by worktree path
-	states   map[string]host.AgentState // by workspace, as of the last poll
-	comments map[string]replaced        // by workspace, nil until loaded from CommentsFile
+	// commentMu orders comment writes. Without it, restoring a stale
+	// comment could read the comment before a concurrent Badge wrote it
+	// and take kelpie's badge for the person's original.
+	commentMu sync.Mutex
+	mu        sync.Mutex
+	repos     map[string]cachedRepos     // by worktree path
+	states    map[string]host.AgentState // by workspace, as of the last poll
+	comments  map[string]replaced        // by workspace, nil until loaded from CommentsFile
 	// seen are the comments this run wrote or checked. The daemon reports
 	// every badge again after each resync, for herdr, which forgets them;
 	// Orca keeps comments, and polls resync every 15 s.
@@ -372,7 +376,7 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 	case err == nil:
 	case c == "agent_prompt_blocked":
 		return host.ErrBlocked
-	case c == "terminal_handle_stale", c == "selector_not_found":
+	case c == "terminal_handle_stale", c == "selector_not_found", errors.Is(err, errNotStarted):
 		return err
 	default:
 		return fmt.Errorf("%w: %w", host.ErrUnconfirmed, err)
@@ -412,6 +416,8 @@ func (o *Orca) Badge(ctx context.Context, ws host.Workspace, b host.Badge) error
 	if same || !saved && text == "" {
 		return nil
 	}
+	o.commentMu.Lock()
+	defer o.commentMu.Unlock()
 	w, err := o.row(ctx, ws)
 	if err != nil {
 		return err
@@ -480,10 +486,24 @@ func (o *Orca) restoreStale(ctx context.Context, rows []worktree) {
 			o.mu.Unlock()
 			continue
 		}
-		if err := o.setComment(ctx, id, c, ""); err != nil {
+		if err := o.restore(ctx, id, c); err != nil {
 			slog.Warn("orca comment not restored", "workspace", id, "err", err)
 		}
 	}
+}
+
+// restore puts back one stale comment unless a Badge claimed the worktree
+// since the stale list was made, when current is no longer current.
+func (o *Orca) restore(ctx context.Context, id, current string) error {
+	o.commentMu.Lock()
+	defer o.commentMu.Unlock()
+	o.mu.Lock()
+	claimed := o.seen[id]
+	o.mu.Unlock()
+	if claimed {
+		return nil
+	}
+	return o.setComment(ctx, id, current, "")
 }
 
 // load reads CommentsFile once. Call with o.mu held.
@@ -539,6 +559,10 @@ func (o *Orca) Notify(ctx context.Context, n host.Notification) error {
 	return errors.ErrUnsupported
 }
 
+// errNotStarted is orca failing to start at all (missing, not executable),
+// so a send cannot have typed anything and is safe to retry.
+var errNotStarted = errors.New("orca did not start")
+
 type cliError struct {
 	Code    string
 	Message string
@@ -586,6 +610,9 @@ func (o *Orca) run(ctx context.Context, into any, args ...string) error {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		if runErr != nil && cmd.ProcessState == nil {
+			return fmt.Errorf("orca %s: %w: %w", strings.Join(verb, " "), errNotStarted, runErr)
+		}
 		if runErr != nil {
 			return fmt.Errorf("orca %s: %w: %s", strings.Join(verb, " "), runErr, strings.TrimSpace(cmp.Or(stderr.String(), stdout.String())))
 		}

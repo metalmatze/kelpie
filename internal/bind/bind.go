@@ -32,7 +32,8 @@ func New(st state.State, branch bool) *Binder {
 	return &Binder{state: st, branch: branch, now: time.Now, workspaces: map[string]host.Workspace{}, awaited: map[string]bool{}}
 }
 
-// Await marks hosts as running but not listed yet.
+// Await takes every host the daemon runs, before any of them lists. A host
+// left out counts as listed, so its unknown workspaces count as closed.
 func (b *Binder) Await(hosts ...string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
