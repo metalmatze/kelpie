@@ -441,7 +441,7 @@ func (d *daemon) refreshWorkspaces() {
 // resyncs every few seconds.
 func (d *daemon) Resync(hostName string, list []host.Workspace) {
 	d.binder.SetWorkspaces(hostName, list)
-	d.sched.Prune(d.alive)
+	d.sched.Prune(d.alive(hostName))
 	ids := make([]string, len(list))
 	for i, ws := range list {
 		ids[i] = ws.ID
@@ -459,7 +459,7 @@ func (d *daemon) Resync(hostName string, list []host.Workspace) {
 	// every token, so report them all again.
 	d.badgeMu.Lock()
 	for id := range d.shown {
-		if ws, ok := d.binder.Workspace(id); !ok || ws.Host == hostName {
+		if host.HostOf(id) == hostName {
 			delete(d.shown, id)
 		}
 	}
@@ -477,15 +477,22 @@ func (d *daemon) Upsert(ws host.Workspace) {
 	}
 }
 
-func (d *daemon) Remove(_, id string) {
+func (d *daemon) Remove(hostName, id string) {
 	d.binder.Remove(id)
-	d.sched.Prune(d.alive)
+	d.sched.Prune(d.alive(hostName))
 	slog.Info("pane closed", "id", id)
 }
 
-func (d *daemon) alive(workspace string) bool {
-	_, ok := d.binder.Workspace(workspace)
-	return ok
+// alive judges only the workspaces of hostName, the host that just
+// reported its list: another host's may be unknown because it is down.
+func (d *daemon) alive(hostName string) func(workspace string) bool {
+	return func(workspace string) bool {
+		if host.HostOf(workspace) != hostName {
+			return true
+		}
+		_, ok := d.binder.Workspace(workspace)
+		return ok
+	}
 }
 
 func (d *daemon) Move(_, from string, ws host.Workspace) {

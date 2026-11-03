@@ -4,6 +4,10 @@ hosts:
     bin: herdr
     socket: ""          # default: $HERDR_SOCKET_PATH, else herdr's own default
     poll: 15s
+  orca:
+    enabled: false
+    bin: ""             # default: $ORCA_CLI_COMMAND, else orca (orca-ide on Linux)
+    poll: 15s
 
 delivery:
   debounce: 30s

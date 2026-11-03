@@ -239,3 +239,9 @@ func (h *Herdr) run(ctx context.Context, into any, args ...string) error {
 	}
 	return json.Unmarshal(stdout.Bytes(), into)
 }
+
+// Caller is the pane the current process runs in.
+func Caller() (string, bool) {
+	id := os.Getenv("HERDR_PANE_ID")
+	return id, id != ""
+}

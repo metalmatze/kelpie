@@ -29,8 +29,19 @@ type Config struct {
 	Sources []Source `yaml:"sources"`
 }
 
+// Hosts lists the agent hosts kelpie delivers to. Enable several to reach
+// agents in all of them from one daemon; each workspace belongs to one host.
 type Hosts struct {
 	Herdr Herdr `yaml:"herdr"`
+	Orca  Orca  `yaml:"orca"`
+}
+
+type Orca struct {
+	Enabled bool `yaml:"enabled"`
+	// Bin defaults to $ORCA_CLI_COMMAND, else orca, or orca-ide on Linux
+	// where bare orca is the GNOME screen reader.
+	Bin  string   `yaml:"bin"`
+	Poll Duration `yaml:"poll"`
 }
 
 type Herdr struct {
@@ -180,7 +191,10 @@ func Load(path string) (*Config, error) {
 
 func Parse(data []byte) (*Config, error) {
 	cfg := &Config{
-		Hosts: Hosts{Herdr: Herdr{Bin: "herdr", Poll: Duration{15 * time.Second}}},
+		Hosts: Hosts{
+			Herdr: Herdr{Bin: "herdr", Poll: Duration{15 * time.Second}},
+			Orca:  Orca{Poll: Duration{15 * time.Second}},
+		},
 		Delivery: Delivery{
 			Debounce:       Duration{30 * time.Second},
 			UrgentDebounce: Duration{5 * time.Second},

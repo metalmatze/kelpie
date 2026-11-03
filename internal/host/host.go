@@ -11,10 +11,26 @@ import (
 
 type Workspace struct {
 	Host   string   // herdr | orca
-	ID     string   // stable: herdr pane id, Orca "<repoId>::<worktreePath>"
+	ID     string   // unique across hosts, see HostOf
 	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
 	Branch string
 	Path   string
+}
+
+// prefixed are the hosts whose workspace IDs start with "<name>:".
+var prefixed = []string{"orca"}
+
+// HostOf names the host a workspace ID belongs to. IDs are unique across
+// hosts so bindings, reminders and delivery queues can key on the ID alone,
+// and so a host that failed to list its workspaces does not have its
+// bindings ended by another host's resync. herdr's pane IDs (w3:p1) stay
+// bare because watches.json and reminders.json stored them before there was
+// a second host; every other host prefixes its IDs with its name.
+func HostOf(id string) string {
+	if name, _, ok := strings.Cut(id, ":"); ok && slices.Contains(prefixed, name) {
+		return name
+	}
+	return "herdr"
 }
 
 type AgentState string

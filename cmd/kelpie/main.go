@@ -20,6 +20,8 @@ import (
 	"github.com/metalmatze/kelpie/internal/control"
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
+	"github.com/metalmatze/kelpie/internal/host"
+	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/state"
 )
 
@@ -58,6 +60,23 @@ func main() {
 	if err := kctx.Run(); err != nil && !errors.Is(err, context.Canceled) {
 		kctx.FatalIfErrorf(err)
 	}
+}
+
+// callers detect the workspace a command runs in, one per host.
+var callers = []func() (string, bool){herdr.Caller}
+
+// callerWorkspace is the workspace given with --workspace, else the pane or
+// terminal the command runs in.
+func callerWorkspace(flag string) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	for _, detect := range callers {
+		if id, ok := detect(); ok {
+			return id, nil
+		}
+	}
+	return "", errors.New("not inside a herdr pane or an Orca terminal; pass --workspace <id as kelpie status lists it>")
 }
 
 type InitCmd struct{}
@@ -186,12 +205,13 @@ type WatchCmd struct {
 
 type WatchGitHubCmd struct {
 	Target    string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
-	Workspace string `help:"Pane to prompt. Default: this pane." env:"HERDR_PANE_ID"`
+	Workspace string `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
 func (c *WatchGitHubCmd) Run(ctx context.Context) error {
-	if c.Workspace == "" {
-		return errors.New("not inside a herdr pane; pass --workspace <pane id>")
+	workspace, err := callerWorkspace(c.Workspace)
+	if err != nil {
+		return err
 	}
 	subject, err := githubTarget(ctx, c.Target)
 	if err != nil {
@@ -204,11 +224,11 @@ func (c *WatchGitHubCmd) Run(ctx context.Context) error {
 			return fmt.Errorf("no GitHub org or user %s (gh api users/%s: %w)", owner, owner, err)
 		}
 	}
-	return watch(ctx, subject, c.Workspace)
+	return watch(ctx, subject, workspace)
 }
 
 func watch(ctx context.Context, subject core.Subject, workspace string) error {
-	resp, err := control.NewClient(control.SocketPath()).Watch(ctx, control.WatchRequest{Subject: subject, Host: "herdr", Workspace: workspace})
+	resp, err := control.NewClient(control.SocketPath()).Watch(ctx, control.WatchRequest{Subject: subject, Host: host.HostOf(workspace), Workspace: workspace})
 	if err != nil {
 		return err
 	}
@@ -240,7 +260,7 @@ type UnwatchCmd struct {
 
 type UnwatchSubjectCmd struct {
 	Subject   string `arg:"" help:"Subject as kelpie status lists it, like github-inbox:prometheus."`
-	Workspace string `help:"Pane whose watch to end; other panes keep theirs. Default: this pane." env:"HERDR_PANE_ID"`
+	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
 }
 
 func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
@@ -253,7 +273,7 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
 
 type UnwatchGitHubCmd struct {
 	Target    string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
-	Workspace string `help:"Pane whose watch to end; other panes keep theirs. Default: this pane." env:"HERDR_PANE_ID"`
+	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
 }
 
 func (c *UnwatchGitHubCmd) Run(ctx context.Context) error {
@@ -265,8 +285,9 @@ func (c *UnwatchGitHubCmd) Run(ctx context.Context) error {
 }
 
 func unwatch(ctx context.Context, subject core.Subject, workspace string) error {
-	if workspace == "" {
-		return errors.New("not inside a herdr pane; pass --workspace <pane id>")
+	workspace, err := callerWorkspace(workspace)
+	if err != nil {
+		return err
 	}
 	if err := control.NewClient(control.SocketPath()).Unwatch(ctx, subject, workspace); err != nil {
 		return err
@@ -303,14 +324,15 @@ type RemindCmd struct {
 	At        string        `xor:"when" help:"Due at this local time: 10:00 (the next one), 2026-10-31T10:00, or RFC 3339."`
 	Cron      string        `xor:"when" help:"Due on this cron schedule, like '0 9 * * 1-5' or @daily; local time unless prefixed with CRON_TZ=."`
 	Subject   string        `help:"Pull request the reminder is about. Its pending updates and fetch command come with the reminder."`
-	Workspace string        `help:"Pane to prompt. Default: this pane." env:"HERDR_PANE_ID"`
+	Workspace string        `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
 func (c *RemindCmd) Run(ctx context.Context) error {
-	if c.Workspace == "" {
-		return errors.New("not inside a herdr pane; pass --workspace <pane id>")
+	workspace, err := callerWorkspace(c.Workspace)
+	if err != nil {
+		return err
 	}
-	req := control.RemindRequest{Workspace: c.Workspace, Text: strings.Join(c.Text, " "), Subject: core.Subject(c.Subject), Cron: c.Cron}
+	req := control.RemindRequest{Workspace: workspace, Text: strings.Join(c.Text, " "), Subject: core.Subject(c.Subject), Cron: c.Cron}
 	switch {
 	case c.In > 0:
 		req.Due = time.Now().Add(c.In)
@@ -356,7 +378,7 @@ func parseAt(s string, now time.Time) (time.Time, error) {
 
 type RemindersCmd struct {
 	All       bool   `help:"List the reminders of every pane."`
-	Workspace string `help:"Pane whose reminders to list. Default: this pane." env:"HERDR_PANE_ID"`
+	Workspace string `help:"Pane or terminal whose reminders to list. Default: the one this runs in."`
 }
 
 func (c *RemindersCmd) Run(ctx context.Context) error {
@@ -364,9 +386,11 @@ func (c *RemindersCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Outside any pane or terminal, list every reminder.
+	workspace, _ := callerWorkspace(c.Workspace)
 	n := 0
 	for _, r := range st.Reminders {
-		if c.All || c.Workspace == "" || r.Workspace == c.Workspace {
+		if c.All || workspace == "" || r.Workspace == workspace {
 			printReminder(r, true)
 			n++
 		}

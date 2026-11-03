@@ -27,9 +27,11 @@ func New(st state.State, branch bool) *Binder {
 	return &Binder{state: st, branch: branch, now: time.Now, workspaces: map[string]host.Workspace{}}
 }
 
-// SetWorkspaces replaces the known workspaces of one host and ends bindings
-// whose workspace is gone. Call it only after a successful host poll, or a
-// transient CLI failure unbinds everything.
+// SetWorkspaces replaces the known workspaces of one host and ends that
+// host's bindings whose workspace is gone. Call it only after a successful
+// host poll, or a transient CLI failure unbinds everything. Other hosts'
+// bindings stay even when their workspaces are not known yet: that host may
+// be down or not listed yet at startup.
 func (b *Binder) SetWorkspaces(hostName string, list []host.Workspace) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -42,7 +44,7 @@ func (b *Binder) SetWorkspaces(hostName string, list []host.Workspace) {
 		b.workspaces[ws.ID] = ws
 	}
 	for _, bd := range b.state.AllBindings() {
-		if _, ok := b.workspaces[bd.Workspace]; !ok {
+		if _, ok := b.workspaces[bd.Workspace]; !ok && host.HostOf(bd.Workspace) == hostName {
 			slog.Info("unbind: workspace closed", "subject", bd.Subject, "workspace", bd.Workspace)
 			b.state.DeleteBinding(bd.Subject, bd.Workspace)
 		}
