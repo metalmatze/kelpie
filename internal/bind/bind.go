@@ -21,10 +21,24 @@ type Binder struct {
 
 	mu         sync.Mutex
 	workspaces map[string]host.Workspace
+	// awaited are the running hosts that have not listed their workspaces
+	// yet. Until one does, a workspace of it that is not known is not
+	// closed either: the host may still be starting, like the Orca app
+	// after a login.
+	awaited map[string]bool
 }
 
 func New(st state.State, branch bool) *Binder {
-	return &Binder{state: st, branch: branch, now: time.Now, workspaces: map[string]host.Workspace{}}
+	return &Binder{state: st, branch: branch, now: time.Now, workspaces: map[string]host.Workspace{}, awaited: map[string]bool{}}
+}
+
+// Await marks hosts as running but not listed yet.
+func (b *Binder) Await(hosts ...string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, h := range hosts {
+		b.awaited[h] = true
+	}
 }
 
 // SetWorkspaces replaces the known workspaces of one host and ends that
@@ -35,6 +49,7 @@ func New(st state.State, branch bool) *Binder {
 func (b *Binder) SetWorkspaces(hostName string, list []host.Workspace) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	delete(b.awaited, hostName)
 	for id, ws := range b.workspaces {
 		if ws.Host == hostName {
 			delete(b.workspaces, id)
@@ -90,6 +105,14 @@ func (b *Binder) Move(from string, ws host.Workspace) {
 	}
 }
 
+// Unlisted reports whether the host of workspace id runs but has not
+// listed its workspaces yet, so whether it exists is not known.
+func (b *Binder) Unlisted(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.awaited[host.HostOf(id)]
+}
+
 func (b *Binder) Workspace(id string) (host.Workspace, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -127,6 +150,10 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		// branch the workspace no longer owns this PR.
 		if alive && (bd.Via != "branch" || matchesBranch(ws, ev)) {
 			targets = append(targets, Target{Workspace: ws, Binding: bd})
+			continue
+		}
+		if !alive && b.awaited[host.HostOf(bd.Workspace)] {
+			targets = append(targets, Target{Workspace: unlisted(bd.Workspace), Binding: bd})
 			continue
 		}
 		b.state.DeleteBinding(ev.Subject, bd.Workspace)
@@ -184,4 +211,10 @@ func matchesBranch(ws host.Workspace, ev core.Event) bool {
 		}
 	}
 	return false
+}
+
+// unlisted stands in for a workspace whose host has not listed it yet. The
+// router queues for it and delivers once the host knows it.
+func unlisted(id string) host.Workspace {
+	return host.Workspace{Host: host.HostOf(id), ID: id}
 }

@@ -17,7 +17,6 @@ type Workspace struct {
 	Path   string
 }
 
-// prefixed are the hosts whose workspace IDs start with "<name>:".
 var prefixed = []string{"orca"}
 
 // HostOf names the host a workspace ID belongs to. IDs are unique across

@@ -75,7 +75,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		d.hosts = append(d.hosts, &herdr.Herdr{Bin: cfg.Hosts.Herdr.Bin, Socket: cfg.Hosts.Herdr.Socket, Poll: cfg.Hosts.Herdr.Poll.Duration})
 	}
 	if o := cfg.Hosts.Orca; o.Enabled {
-		d.hosts = append(d.hosts, &orca.Orca{Bin: o.Bin, Poll: o.Poll.Duration, Comment: o.Comment})
+		d.hosts = append(d.hosts, &orca.Orca{Bin: o.Bin, Poll: o.Poll.Duration, Comment: o.Comment, CommentsFile: filepath.Join(control.StateDir(), "orca-comments.json")})
 	}
 	if len(d.hosts) == 0 {
 		return errors.New("no host enabled")
@@ -86,6 +86,9 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 	d.binder = bind.New(st, cfg.Binders.Branch)
+	for _, h := range d.hosts {
+		d.binder.Await(h.Name())
+	}
 	d.router = route.New(ctx, cfg.Delivery, route.NewRules(cfg.Rules, ghLogin(ctx)), d.binder, d.hosts)
 
 	if err := d.buildRunners(cfg.Sources, st); err != nil {
@@ -460,11 +463,19 @@ func (d *daemon) Resync(hostName string, list []host.Workspace) {
 		slog.Info("workspaces", "host", hostName, "panes", ids)
 	}
 	// A resync follows a reconnect, maybe to a restarted herdr that forgot
-	// every token, so report them all again.
+	// every token, so report them all again. Forgetting what was shown
+	// would skip a badge that turned empty meanwhile (a merged PR, a fired
+	// reminder), and leave it up for good: Orca keeps comments, and resyncs
+	// on every poll. unknownBadge differs from every text, the empty one
+	// included.
 	d.badgeMu.Lock()
-	for id := range d.shown {
-		if host.HostOf(id) == hostName {
+	for id, text := range d.shown {
+		switch {
+		case host.HostOf(id) != hostName:
+		case text == "":
 			delete(d.shown, id)
+		default:
+			d.shown[id] = unknownBadge
 		}
 	}
 	d.badgeMu.Unlock()
@@ -569,6 +580,8 @@ func (d *daemon) refreshBadges() {
 	}
 	maps.DeleteFunc(d.shown, func(id, _ string) bool { return !live[id] })
 }
+
+const unknownBadge = "\x00"
 
 // clearBadges removes every badge on shutdown, so no pane shows a watch that
 // nothing runs anymore. d.ctx is done by then.

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -33,16 +34,27 @@ type Orca struct {
 	// default: the comment is one field that people and Orca's own skill
 	// write too, and kelpie would overwrite it.
 	Comment bool
+	// CommentsFile keeps the comments kelpie replaced, so that after a
+	// crash, or a shutdown while Orca was down, the next run still puts
+	// back the person's comment instead of taking its own badge for it.
+	CommentsFile string
 
 	mu       sync.Mutex
 	repos    map[string]cachedRepos     // by worktree path
 	states   map[string]host.AgentState // by workspace, as of the last poll
-	comments map[string]string          // by workspace: the comment before kelpie's badge replaced it
-	// shown is the badge last written per workspace. The daemon reports
+	comments map[string]replaced        // by workspace, nil until loaded from CommentsFile
+	// seen are the comments this run wrote or checked. The daemon reports
 	// every badge again after each resync, for herdr, which forgets them;
 	// Orca keeps comments, and polls resync every 15 s.
-	shown map[string]string
+	seen  map[string]bool
+	polls int
 	down  bool
+}
+
+// replaced is a worktree comment that kelpie's badge replaced.
+type replaced struct {
+	Original string `json:"original"`
+	Written  string `json:"written"` // kelpie's badge, as last written
 }
 
 type cachedRepos struct {
@@ -216,6 +228,13 @@ func (o *Orca) poll(ctx context.Context, ev host.Events) {
 	}
 	ev.Resync(o.Name(), list)
 	o.ready(rows, ev)
+	o.mu.Lock()
+	o.polls++
+	restore := o.polls == 2
+	o.mu.Unlock()
+	if restore {
+		o.restoreStale(ctx, rows)
+	}
 }
 
 func (o *Orca) ready(rows []worktree, ev host.Events) {
@@ -344,13 +363,19 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 			} `json:"prompt"`
 		} `json:"send"`
 	}
+	// Only failures that come before anything is typed may be retried. Any
+	// other (a timeout, a killed or unreadable orca) may have typed the
+	// text already, and a retry would type it twice. A stale handle needs
+	// no retry here: the router retries, and terminal looks it up again.
 	err = o.run(ctx, &resp, "terminal", "send", "--terminal", t.Handle, "--text", text, "--enter", "--wait-submit", "10")
-	switch code(err) {
-	case "":
-	case "agent_prompt_blocked":
+	switch c := code(err); {
+	case err == nil:
+	case c == "agent_prompt_blocked":
 		return host.ErrBlocked
-	default:
+	case c == "terminal_handle_stale", c == "selector_not_found":
 		return err
+	default:
+		return fmt.Errorf("%w: %w", host.ErrUnconfirmed, err)
 	}
 	// turn_started is Orca seeing the agent begin a turn. Agents it has no
 	// provider support for only report input_accepted, so their pickup is
@@ -373,49 +398,132 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 
 // Badge replaces the worktree's comment, the line on its card in Orca's
 // sidebar, and puts back the comment it replaced once there is nothing to
-// show. Orca ignores --comment "", so an empty original comes back as a
-// single space, which shows as blank.
+// show. A comment the person changed meanwhile is theirs and stays.
 func (o *Orca) Badge(ctx context.Context, ws host.Workspace, b host.Badge) error {
 	if !o.Comment {
 		return nil
 	}
 	text := b.String()
 	o.mu.Lock()
-	orig, saved := o.comments[ws.ID]
-	same := saved && o.shown[ws.ID] == text
+	o.load()
+	r, saved := o.comments[ws.ID]
+	same := saved && o.seen[ws.ID] && r.Written == text
 	o.mu.Unlock()
-	if same {
+	if same || !saved && text == "" {
 		return nil
 	}
-	if !saved {
-		if text == "" {
-			return nil
-		}
-		w, err := o.row(ctx, ws)
-		if err != nil {
-			return err
-		}
-		orig = w.Comment
-	}
-	comment := text
-	if text == "" {
-		comment = cmp.Or(orig, " ")
-	}
-	if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+strings.TrimPrefix(ws.ID, prefix), "--comment", comment); err != nil {
+	w, err := o.row(ctx, ws)
+	if err != nil {
 		return err
 	}
+	return o.setComment(ctx, ws.ID, w.Comment, text)
+}
+
+// setComment shows text as the comment of a worktree whose comment is now
+// current, or puts back the replaced one when text is empty.
+func (o *Orca) setComment(ctx context.Context, id, current, text string) error {
 	o.mu.Lock()
-	if o.comments == nil {
-		o.comments, o.shown = map[string]string{}, map[string]string{}
+	r, saved := o.comments[id]
+	o.mu.Unlock()
+	if !saved || current != r.Written {
+		r.Original = current
 	}
+	want := text
 	if text == "" {
-		delete(o.comments, ws.ID)
-		delete(o.shown, ws.ID)
+		// Orca ignores --comment "", so an empty original comes back as a
+		// single space, which shows as blank.
+		want = cmp.Or(r.Original, " ")
+	}
+	if want != current {
+		if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+strings.TrimPrefix(id, prefix), "--comment", want); err != nil {
+			return err
+		}
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if text == "" {
+		delete(o.comments, id)
+		delete(o.seen, id)
 	} else {
-		o.comments[ws.ID], o.shown[ws.ID] = orig, text
+		r.Written = text
+		o.comments[id] = r
+		o.seen[id] = true
+	}
+	o.save()
+	return nil
+}
+
+// restoreStale puts back the comments a previous run replaced and this
+// run shows nothing for. It waits for the second poll: at the first, the
+// sources have not observed anything yet, so badges are missing that
+// would be written again a moment later.
+func (o *Orca) restoreStale(ctx context.Context, rows []worktree) {
+	current := map[string]string{}
+	for _, w := range rows {
+		current[prefix+w.WorktreeID] = w.Comment
+	}
+	o.mu.Lock()
+	o.load()
+	var stale []string
+	for id := range o.comments {
+		if !o.seen[id] {
+			stale = append(stale, id)
+		}
 	}
 	o.mu.Unlock()
-	return nil
+	for _, id := range stale {
+		c, ok := current[id]
+		if !ok { // the worktree is gone
+			o.mu.Lock()
+			delete(o.comments, id)
+			o.save()
+			o.mu.Unlock()
+			continue
+		}
+		if err := o.setComment(ctx, id, c, ""); err != nil {
+			slog.Warn("orca comment not restored", "workspace", id, "err", err)
+		}
+	}
+}
+
+// load reads CommentsFile once. Call with o.mu held.
+func (o *Orca) load() {
+	if o.comments != nil {
+		return
+	}
+	o.comments, o.seen = map[string]replaced{}, map[string]bool{}
+	if o.CommentsFile == "" {
+		return
+	}
+	data, err := os.ReadFile(o.CommentsFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("orca comments not read", "file", o.CommentsFile, "err", err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &o.comments); err != nil {
+			slog.Warn("orca comments not read", "file", o.CommentsFile, "err", err)
+		}
+	}
+}
+
+// save writes CommentsFile and renames it into place, so a crash leaves
+// the old file or the new one. Call with o.mu held.
+func (o *Orca) save() {
+	if o.CommentsFile == "" {
+		return
+	}
+	data, _ := json.MarshalIndent(o.comments, "", "  ")
+	tmp := o.CommentsFile + ".tmp"
+	err := os.MkdirAll(filepath.Dir(o.CommentsFile), 0o700)
+	if err == nil {
+		err = os.WriteFile(tmp, data, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(tmp, o.CommentsFile)
+	}
+	if err != nil {
+		slog.Warn("orca comments not saved", "file", o.CommentsFile, "err", err)
+	}
 }
 
 // Notify marks the worktree unread when the person is needed there, the
@@ -425,8 +533,10 @@ func (o *Orca) Notify(ctx context.Context, n host.Notification) error {
 	if !n.NeedsYou || n.Workspace.Host != o.Name() {
 		return errors.ErrUnsupported
 	}
-	err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+strings.TrimPrefix(n.Workspace.ID, prefix), "--unread")
-	return errors.Join(err, errors.ErrUnsupported)
+	if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+strings.TrimPrefix(n.Workspace.ID, prefix), "--unread"); err != nil {
+		return err
+	}
+	return errors.ErrUnsupported
 }
 
 type cliError struct {
@@ -439,7 +549,6 @@ func (e *cliError) Error() string {
 	return fmt.Sprintf("orca %s: %s: %s", strings.Join(e.args, " "), e.Code, e.Message)
 }
 
-// code is the orca error code of err, "" for nil or another error.
 func code(err error) string {
 	if e, ok := errors.AsType[*cliError](err); ok {
 		return e.Code

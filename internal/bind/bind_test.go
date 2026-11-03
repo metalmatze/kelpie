@@ -98,3 +98,27 @@ func TestGitHubRepo(t *testing.T) {
 		}
 	}
 }
+
+// A host that has not listed its workspaces yet, like the Orca app still
+// starting at login, keeps its bindings; once it lists, a missing workspace
+// is closed.
+func TestAwaitedHostKeepsBindings(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	b.Await("herdr", "orca")
+	const ws = "orca:repo::/src/api"
+	b.Bind(core.Binding{Subject: "github:acme/api#1", Workspace: ws, Via: "explicit"})
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+
+	got := b.Resolve(core.Event{Subject: "github:acme/api#1"})
+	if len(got) != 1 || got[0].Workspace.ID != ws || !b.Unlisted(ws) {
+		t.Fatalf("before orca listed: %+v", got)
+	}
+	b.SetWorkspaces("orca", nil)
+	if got := b.Resolve(core.Event{Subject: "github:acme/api#1"}); got != nil || b.Unlisted(ws) {
+		t.Fatalf("after orca listed without it: %+v", got)
+	}
+	if _, ok := b.Binding("github:acme/api#1", ws); ok {
+		t.Fatal("binding of a closed workspace kept")
+	}
+}

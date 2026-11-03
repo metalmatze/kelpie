@@ -67,6 +67,8 @@ func (r *Router) Route(ev core.Event) {
 	if ev.Workspace != "" {
 		if ws, ok := r.binder.Workspace(ev.Workspace); ok {
 			targets = []bind.Target{{Workspace: ws}}
+		} else if r.binder.Unlisted(ev.Workspace) {
+			targets = []bind.Target{{Workspace: host.Workspace{Host: host.HostOf(ev.Workspace), ID: ev.Workspace}}}
 		}
 	} else {
 		targets = r.binder.Resolve(ev)
@@ -157,14 +159,19 @@ func (r *Router) flush(id string) {
 	}
 
 	ws, ok := r.binder.Workspace(id)
-	if !ok {
+	var err error
+	switch {
+	case ok:
+		ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
+		defer cancel()
+		err = r.hosts[ws.Host].Deliver(ctx, ws, Render(r.delivery.Prefix, items))
+	case r.binder.Unlisted(id):
+		ws = host.Workspace{Host: host.HostOf(id), ID: id}
+		err = fmt.Errorf("%s has not listed its workspaces yet", ws.Host)
+	default:
 		slog.Info("drop batch: workspace closed", "workspace", id, "events", len(items))
 		return
 	}
-	text := Render(r.delivery.Prefix, items)
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-	defer cancel()
-	err := r.hosts[ws.Host].Deliver(ctx, ws, text)
 	if errors.Is(err, host.ErrUnconfirmed) {
 		// Sent, so not retried; the person checks the pane instead.
 		slog.Warn("delivered, but the agent showed no activity", "workspace", id, "err", err)
@@ -239,18 +246,24 @@ func (r *Router) notify(ws host.Workspace, n host.Notification) {
 	defer cancel()
 	n.Workspace = ws
 	err := r.hosts[ws.Host].Notify(ctx, n)
+	if err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		slog.Warn("notification failed", "host", ws.Host, "workspace", ws.ID, "err", err)
+	}
+	shown := ws.Host
 	for name, h := range r.hosts {
-		if !errors.Is(err, errors.ErrUnsupported) {
+		if err == nil {
 			break
 		}
 		if name != ws.Host {
-			err = h.Notify(ctx, n)
+			err, shown = h.Notify(ctx, n), name
 		}
 	}
 	switch {
+	case err == nil:
+		slog.Info("notified", "host", shown, "workspace", ws.ID, "title", n.Title)
 	case errors.Is(err, errors.ErrUnsupported):
 		slog.Debug("no host can show notifications", "workspace", ws.ID, "title", n.Title)
-	case err != nil:
+	default:
 		slog.Warn("notification failed", "workspace", ws.ID, "err", err)
 	}
 }
