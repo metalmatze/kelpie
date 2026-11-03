@@ -100,39 +100,68 @@ A host is whatever owns the agent terminals. kelpie talks to it through one smal
 
 ```go
 type Workspace struct {
-    Host   string // herdr | orca
-    ID     string // stable: herdr pane id, Orca "<repoId>::<worktreePath>"
-    Repo   string // repo root or remote
+    Host   string   // herdr | orca
+    ID     string   // unique across hosts, see HostOf
+    Repos  []string // owner/name of every GitHub remote, so fork PRs match too
     Branch string
     Path   string
 }
 
+// HostOf: IDs of every host but herdr start with "<name>:"; herdr's stay bare.
+func HostOf(id string) string
+
 type AgentState string // idle | working | blocked | unknown
+
+var (
+    ErrBlocked     = errors.New("agent is blocked")  // waits at a question or approval; stays queued
+    ErrBusy        = errors.New("agent is busy")     // working, and the host cannot hand it text cleanly; stays queued
+    ErrUnconfirmed = errors.New("agent showed no activity after the prompt") // never resent
+)
 
 type Host interface {
     Name() string
     Workspaces(ctx context.Context) ([]Workspace, error)
-    Watch(ctx context.Context, changed func()) error // push if the host can, else poll
+    // Watch reports changes to an Events sink until ctx ends: pushed if the host can, else polled.
+    Watch(ctx context.Context, ev Events) error
     State(ctx context.Context, ws Workspace) (AgentState, error)
     Deliver(ctx context.Context, ws Workspace, text string) error
-    Badge(ctx context.Context, ws Workspace, text string) error // empty clears
+    Badge(ctx context.Context, ws Workspace, b Badge) error // zero Badge clears
+    // Notify may return errors.ErrUnsupported; the router then asks another host.
+    Notify(ctx context.Context, n Notification) error
 }
+
+type Notification struct {
+    Title, Body string
+    Workspace   Workspace // what it is about, so a host can point at it
+    NeedsYou    bool      // a request for the person, not just news
+}
+
+// Events is what Watch feeds: Resync(host, list), Upsert, Remove, Move,
+// and AgentReady(host, id), which releases a delivery queued while the agent was busy or blocked.
 ```
 
 **Bind to the workspace, not the terminal.** Bindings point at a stable workspace ID. The live agent terminal is resolved at delivery time, because Orca terminal handles are runtime-scoped and go stale after a restart.
 
+**IDs are unique across hosts.** Bindings, reminders and delivery queues key on the ID alone, so every host but herdr prefixes its IDs with its name (`orca:<repoId>::<path>`), and `host.HostOf(id)` names the owner. herdr's pane IDs stay bare because `watches.json` and `reminders.json` stored them before there was a second host. The prefix also scopes resyncs: a host's poll ends only the bindings and reminders of its own workspaces, so a host that is down or not listed yet at startup keeps them.
+
 | Capability | herdr | Orca |
 | --- | --- | --- |
-| List workspaces | `herdr agent list` (+ pane cwd, open question) | `orca worktree ps --json`, `orca worktree list --json` (worktree id, path, branch) |
-| Find the agent terminal | the pane itself | `orca terminal list --worktree id:<id> --json` |
-| Change notifications | push: `events.subscribe` on the herdr socket | poll `worktree ps` + `terminal list` every 15 s |
-| Agent state | idle, working, blocked from herdr integrations | `orca terminal wait --for tui-idle --timeout-ms 1000` as an idle probe; no blocked signal confirmed |
-| Badge | `herdr pane report-metadata <pane> --source kelpie --token kelpie=<text>` | none known yet |
-| Deliver | `herdr agent prompt <pane> "<text>"` | `orca terminal send --terminal <handle> --text "<text>" --enter --wait-submit 10 --json` |
-| Explicit watch from inside a workspace | `$HERDR_PANE_ID` | `orca worktree current --json` |
+| List workspaces | `herdr agent list` (`cwd`, branch via `git -C`) | `orca worktree ps --json`: one row per worktree, `worktreeId` (`<repoId>::<path>`), `path`, `branch` (a full ref, strip `refs/heads/`). Every worktree counts, with or without an agent, so a watch survives the agent restarting; main worktrees too. Archived worktrees count as closed. Remotes come from `git -C`, cached for 5 min. |
+| Find the agent terminal | the pane itself | `orca terminal list --worktree id:<id> --json`: take writable, non-orphaned terminals with an `agentIdentity`; one that `worktree ps` reports state for (its `paneKey` is `tabId:leafId`) wins, then the one with the latest output. The floating terminal has no worktree and is skipped. Orphaned terminals are PTYs left from before the app started, with no live pane and no agent state. |
+| Change notifications | push: `events.subscribe` on the herdr socket | none: every `hosts.orca.poll` (15 s) `orca status` must report `runtime.state` ready, then `worktree ps` (about 0.2 s) is resynced; any worktree turning idle releases its queued deliveries. While Orca is not ready the poll fails and keeps all Orca watches. |
+| Agent state | idle, working, blocked from herdr integrations | `worktree ps` `agents[].programStatus.state`: `idle`/`done`, `working`, `blocked` (a question and a tool approval alike). `agents[].state` comes from hooks and stays `waiting` after the prompt was cancelled with Esc, so it is only the fallback. Several agents in a worktree: one blocked agent blocks it, else one working agent makes it working. No agent entry (not hooked up, like a plain shell) is unknown, and `terminal wait --for tui-idle --timeout-ms 1000` decides: it times out unless the TUI is idle. |
+| Badge | `herdr pane report-metadata <pane> --source kelpie --token kelpie=<text>` | opt-in (`hosts.orca.comment`): `orca worktree set --worktree id:<id> --comment "<text>"`, the card's one status line. kelpie saves the comment it replaces and puts it back when nothing is watched anymore, or when it stops; Orca ignores `--comment ""`, so an empty original comes back as one space. |
+| Notification | `herdr notification show` | `orca worktree set --worktree id:<id> --unread` (sidebar dot) when the person is needed in that worktree; no title or body, so another host shows the text |
+| Deliver | `herdr agent prompt <pane> "<text>"` | `orca terminal send --terminal <handle> --text "<text>" --enter --wait-submit 10 --json`, only to an idle agent. Multi-line text arrives as one prompt. |
+| Confirm pickup | the agent turns working | the receipt's `result.send.prompt.stages` contains `turn_started`; else the state must turn working or blocked within 5 s |
+| Caller inside a workspace | `$HERDR_PANE_ID` | `$ORCA_WORKTREE_ID`, which kelpie prefixes with `orca:`. `$ORCA_TERMINAL_HANDLE` is runtime-scoped, so it is not the binding. A host passes its variables on to what it starts (Orca launched from a herdr pane leaves `$HERDR_PANE_ID` in every Orca terminal), so when several are set, `$TERM_PROGRAM` (`Orca` or `herdr`) names the innermost host. |
 | Binary | `herdr` | `orca`; on Linux outside Orca terminals `orca-ide`, because bare `orca` is the GNOME screen reader. Honor `ORCA_CLI_COMMAND` when set. |
 
-- **Delivery safety differs.** herdr refuses a prompt (`agent_blocked`) when the agent is waiting at an approval or question. Orca's `terminal send` types regardless, so the Orca adapter only sends after an idle probe succeeds, and queues otherwise.
+- **Orca must be running.** Every command but `orca status` needs the app. `orca status --json` reports `runtime.state`; only `ready` is usable (`graph_not_ready` lasts a second or two after launch). kelpie never launches the GUI: an unready Orca is a host that is down, and its bindings wait. Failures are JSON on stdout, exit 1, `{"ok":false,"error":{"code":...}}`, so the adapter branches on `error.code`, not on text.
+- **Delivery safety.** Both hosts refuse a prompt when the agent waits at an approval or question: herdr with `agent_blocked`, Orca with `agent_prompt_blocked`, and nothing is typed. Orca does not guard a busy agent: it accepts the text, Claude queues it behind the running turn, and the receipt shows no `turn_started`. So the Orca adapter sends only to an idle agent: blocked is `ErrBlocked`, working is `ErrBusy`, and both keep the batch queued and retried like herdr's `agent_blocked`. `agent_prompt_blocked` from `send` is the race between check and send. A receipt without `turn_started` is `ErrUnconfirmed` and is never resent. `turn_started` exists for agents Orca recognizes (`provider: "claude"`); for others the receipt says `provider: "unsupported"` and kelpie watches for the state to turn `working`.
+- **Notifications and badges are weaker on Orca.** There is no toast, no sound and no per-pane token. `Notify` sets the unread dot when `NeedsYou` and always returns `errors.ErrUnsupported` besides, so the router asks the person's other hosts to show the title and body: the notification is for the person, who sees every host. With only Orca enabled, the text goes nowhere and the router logs it at debug. `Badge` is off unless `hosts.orca.comment` is set, because people and Orca's own skill write that field too.
+- **Known limits.** Remote Orca environments (`--environment`) are not covered; only the local host is listed. Several agents in one worktree share one workspace, and kelpie delivers to the best terminal (see above), not to each. `terminal send --wait-submit` takes about 8 s even when the agent answers at once. A daemon that crashes while showing the comment leaves its text there until the next run writes or clears it.
+- **No orchestration.** `orca orchestration` is a pull mailbox (Run, Task, Dispatch): a message needs a sender terminal inside Orca, and the receiving agent has to run `orchestration check` itself. It cannot push into an interactive agent that did not opt in. `terminal send` is the path Orca documents for a prompt into an existing agent.
 - **Orca already links PRs, issues and checks to worktrees,** and supports `issue:<number>` and `branch:<name>` selectors. The branch binder can use those directly.
 - **Badges show what a pane watches.** Each source may set a jq `badge` over its fields (`#482 ✓ approved`, `pyrra 🔔3`). A pane's badge joins those of the subjects it watches plus its reminder count (`⏰2`), as herdr's `$kelpie` token, which shows where the sidebar layout in herdr's `config.toml` lists it. Its herdr workspace gets the same token with the subjects of all its panes, for the Spaces panel. PR checks count required checks only, as in the events. This covers the sidebar labels of the herdr-github plugin for watched PRs, without its polling of every branch. herdr forgets tokens when its server restarts, so kelpie reports them again after every resync, and clears them when it stops.
 - **One socket exception remains.** herdr's CLI has no event-follow verb, so its adapter reads `events.subscribe` (newline-delimited JSON) from the socket the CLI wraps (`$HERDR_SOCKET_PATH`). Everything else on both hosts is CLI.
@@ -244,7 +273,7 @@ Binders turn an event's subject into the workspaces that watch it. They run in o
 
 **Several watchers.** A binding is a subject and a workspace, so several agents can watch one subject: a PR's author and its reviewer, or every agent working in one repo watching its inbox. Each workspace gets its own copy of every event, with its own debounce and blocked queue. kelpie still polls the subject once, for as long as any workspace watches it. `kelpie status` lists one line per subject and workspace.
 
-1. **Explicit:** `kelpie watch <provider> <target>` from inside a workspace (herdr: `$HERDR_PANE_ID`; Orca: `orca worktree current`), or `--workspace`. Always confident. Watching from a second workspace adds a binding instead of moving the first.
+1. **Explicit:** `kelpie watch <provider> <target>` from inside a workspace (herdr: `$HERDR_PANE_ID`; Orca: `$ORCA_WORKTREE_ID`; each host has a detector, the first that matches wins), or `--workspace <id as kelpie status lists it>`. Always confident. Watching from a second workspace adds a binding instead of moving the first.
 2. **Branch:** kelpie keeps a workspace -> repo + branch map, refreshed on host events. A PR whose head equals that branch binds. A Linear ID in the branch name (`eng-123-fix-auth`) binds `linear:ENG-123`.
 3. **Repo inbox (planned):** a workspace whose branch is the repo's default branch (from `gh repo view --json defaultBranchRef`, cached) becomes that repo's inbox and receives `github-inbox:` subjects. If two workspaces sit on the default branch, the choice goes to the confirmation queue. Today `kelpie watch github <owner/repo>` from inside a workspace sets it explicitly.
 4. **Kubernetes:** a namespace pattern (`dev-{branch}`) or a label on the resource binds k8s subjects.
@@ -263,8 +292,8 @@ The router filters and batches events per workspace, then delivery sends one pro
 
 - **Rules:** drop events from ignored actors (yourself, bots unless listed), drop kinds not in `forward`, keep only state transitions for noisy sources.
 - **Debounce:** events for one workspace collect for 30 s (configurable), then go out as one prompt. Urgent kinds (`checks.failed`, `rollout.stuck`, `state.merged`, `metric.breached`) flush after 5 s.
-- **Send:** `herdr agent prompt` or `orca terminal send --enter`. herdr queues text while the agent works; for Orca, kelpie waits for an idle probe first.
-- **Blocked or busy:** if herdr returns `agent_blocked` or the Orca idle probe times out, the batch stays queued and is retried on the next host change or after 30 s.
+- **Send:** `herdr agent prompt` or `orca terminal send --enter`. herdr queues text while the agent works; for Orca, kelpie sends only once the agent's state is idle.
+- **Blocked or busy:** if herdr returns `agent_blocked`, Orca returns `agent_prompt_blocked`, or the Orca agent is working, the batch stays queued and is retried when the host reports the agent idle or after 30 s.
 - **Quiet hours:** optional; events queue and flush as one digest when they end.
 
 **Notifications are for the person.** Prompts go to the agent; a host notification (herdr's `notification show`, following its toast and sound settings) goes to you, in two cases. Once when a pane's updates have been undeliverable for `delivery.notify.stuck` (5 min), typically because its agent waits at a question nobody answers. And for the kinds in `delivery.notify.kinds` (`state.merged`), news worth seeing while the agent handles it.
@@ -299,16 +328,18 @@ Each entry is `stdio` (`command`, `args`, `env`) or `http`/`sse` (`url`, `header
 **OAuth tokens are not in the config.** Remote servers that use OAuth (Slack, Linear) keep their tokens in Claude Code's per-user store, outside these files. kelpie reuses the server definition but signs in once on its own (`kelpie mcp login slack`), with the same account and scopes.
 
 ```yaml
-# Hosts: enable one or both; workspaces from all enabled hosts are merged
+# Hosts: enable one or both; workspaces from all enabled hosts are merged.
+# Each workspace belongs to one host (IDs are prefixed, see Hosts) and each
+# host's poll only ends its own bindings. Orca is off until you enable it.
 hosts:
   herdr:
     enabled: true
     socket: ""                 # default: $HERDR_SOCKET_PATH, else ~/.config/herdr/herdr.sock
   orca:
-    enabled: true
+    enabled: false
     bin: ""                    # default: $ORCA_CLI_COMMAND, else orca (orca-ide on Linux)
-    poll: 15s
-    idle_probe: 1s             # terminal wait --for tui-idle before every send
+    poll: 15s                  # no push events: status + worktree ps every poll
+    comment: false             # show watches as the worktree's comment, replacing yours while any are shown
 
 mcp:
   import: [claude-code]        # .mcp.json + ~/.claude.json, Claude Code precedence
@@ -506,7 +537,7 @@ testdata/             recorded raw CLI and MCP outputs per source
    - `pane.updated` refreshes cwd and branch for the branch binder.
    - The socket connection is reconnected with backoff and resynced with one `herdr pane list`; polling stays as the fallback while it is down.
 3. **M3 Reminders:** in-daemon scheduler, `kelpie remind`/`reminders`/`unremind` over the control socket, `--in`/`--at`/`--cron`, catch-up after sleep or restart, `reminders.json`, `reminder.due` through the router, the skill offering a reminder when the user asks to follow up later.
-4. **M4 Slack, inbox and Orca:** `mcp` adapter, Claude Code MCP import, `mcp login`, Slack thread watch by URL, GitHub notifications inbox (done: `kelpie watch github` per repo or org, conditional `gh api`), repo-inbox binder, Orca host, launchd/systemd.
+4. **M4 Slack, inbox and Orca:** `mcp` adapter, Claude Code MCP import, `mcp login`, Slack thread watch by URL, GitHub notifications inbox (done: `kelpie watch github` per repo or org, conditional `gh api`), repo-inbox binder, Orca host (done: `hosts.orca`, polling, `terminal send` with the blocked/busy guard), launchd/systemd.
 5. **M5 Planning:** Linear source, Linear-ID and link binders, confirmation popup.
 6. **M6 Ship and verify:** merge queue fields, Argo CD, Dash0 and Prometheus source configs, deploy binder.
 7. **M7 Local runtime:** `cli-watch` adapter, kubectl source, namespace binder.
@@ -515,8 +546,10 @@ testdata/             recorded raw CLI and MCP outputs per source
 ## Open questions
 
 - ~~Does `herdr agent list` expose a pane's cwd and branch?~~ It exposes `cwd` and `foreground_cwd`; kelpie reads branch and remotes with `git -C`.
-- Does `orca terminal list --json` expose an agent state, including waiting at a question? If not, the idle probe is the only guard before typing.
-- Can Orca's orchestration inbox (`orca orchestration`) replace typing into a terminal as a cleaner delivery path?
+- ~~Does `orca terminal list --json` expose an agent state, including waiting at a question?~~ Not there, but `orca worktree ps --json` does: `agents[].programStatus.state` is `idle`, `working` or `blocked`, for a question and for a tool approval (verified with Claude Code 2.1 in Orca 1.4.237). Orca's own `terminal send` also refuses a blocked agent. Still open: other agents than Claude, and how often the hook-derived state goes stale.
+- ~~Can Orca's orchestration inbox (`orca orchestration`) replace typing into a terminal?~~ No. It is a pull mailbox that needs an Orca sender terminal and a Run, and the agent must call `orchestration check`; `terminal send` is the supported way into an existing interactive agent.
+- ~~How does a process in an Orca terminal find its workspace?~~ `$ORCA_WORKTREE_ID`, set in every Orca terminal and equal to the workspace ID.
+- Orca's worktree comment is one field that agents and people write too. kelpie saves and restores the original, but an agent that overwrites the badge in between is not noticed until the next change. Is a dedicated field or a marker worth asking Orca for?
 - Which MCP tools return `structuredContent`? Slack and Linear tools that return only markdown make weak sources. What are the exact argument names of `slack_read_thread`?
 - Does `gh api` pass `If-Modified-Since` and expose the `X-Poll-Interval` header (`gh api -i`) well enough for conditional polling, or does the adapter need its own handling?
 - Should the inbox agent mark notifications as read after handling them, so GitHub's unread list stays meaningful for you? Today kelpie leaves that to the agent.
