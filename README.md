@@ -14,7 +14,7 @@ Follow a PR for the agent that owns it. A coding agent's turn ends after it push
 kelpie watch github https://github.com/org/api/pull/421
 ```
 
-Give an agent the GitHub notifications of a repo or an org. The agent gets a count by reason and the thread refs, then fetches the details to triage. These are your own unread notifications, so what arrives depends on what you watch and subscribe to on GitHub. An org watch reads your newest notifications (page 1) and keeps the org's threads. kelpie cannot watch a single issue, and an issue URL starts a watch on the notifications of its whole repository.
+Give an agent the GitHub notifications of a repo or an org. The agent gets a count by reason and the thread refs, then fetches the details to triage. These are your own unread notifications, so what arrives depends on what you watch and subscribe to on GitHub. An org watch reads your newest notifications (page 1) and keeps the org's threads. kelpie cannot watch a single issue. Issues reach the agent through a watch on the notifications of their repo.
 
 ```sh
 kelpie watch github org/api   # one repository
