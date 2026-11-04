@@ -14,6 +14,11 @@ var (
 	prURL   = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
 	prShort = regexp.MustCompile(`^([\w.-]+)/([\w.-]+)#(\d+)$`)
 
+	// A single issue or discussion has no subject of its own yet. Without this
+	// ownerURL would take its URL for the repo and start a repo-wide watch the
+	// person never asked for.
+	itemURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/(issues|discussions)/\d+`)
+
 	ownerURL   = regexp.MustCompile(`^https?://github\.com/([\w.-]+)(?:/([\w.-]+))?(?:[/?#].*)?$`)
 	ownerShort = regexp.MustCompile(`^([\w.-]+)(?:/([\w.-]+))?$`)
 )
@@ -32,7 +37,8 @@ func ParseSubject(s string) (Subject, error) {
 // pull request URL (any sub-page, like /files or #discussion_r1) or
 // owner/repo#123 is the PR: github:owner/repo#123. A repo (owner/repo), an
 // org, or a github.com URL of either is its notifications:
-// github-inbox:owner/repo or github-inbox:owner.
+// github-inbox:owner/repo or github-inbox:owner. Other repo pages (/actions,
+// /tree/...) still mean the repo; a single issue or discussion is an error.
 func GitHubSubject(s string) (Subject, error) {
 	s = strings.TrimSpace(s)
 	m := prURL.FindStringSubmatch(s)
@@ -41,6 +47,9 @@ func GitHubSubject(s string) (Subject, error) {
 	}
 	if m != nil {
 		return Subject(fmt.Sprintf("github:%s/%s#%s", m[1], m[2], m[3])), nil
+	}
+	if m := itemURL.FindStringSubmatch(s); m != nil {
+		return "", fmt.Errorf("kelpie can't watch a single %s yet; %q covers the repo's notifications, %s included", strings.TrimSuffix(m[3], "s"), m[1]+"/"+m[2], m[3])
 	}
 	m = ownerURL.FindStringSubmatch(s)
 	if m == nil {
