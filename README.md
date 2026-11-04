@@ -1,6 +1,6 @@
 # kelpie
 
-kelpie watches the GitHub pull requests you point it at and types an update into the coding agent that owns each one.
+kelpie types GitHub pull request updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
 
 ## Use cases
 
@@ -8,52 +8,52 @@ Run each command in the agent's terminal. The examples use the placeholder repos
 
 ### Watch GitHub for an agent
 
-- **Follow a PR for the agent that owns it.** A coding agent's turn ends after it pushes, so it misses what happens to the PR next. kelpie tells the agent when CI fails or passes, a review or comment arrives, someone else pushes, the branch conflicts with its base, or the PR merges. The watch ends when the PR merges or closes.
+Follow a PR for the agent that owns it. A coding agent's turn ends after it pushes, so it misses what happens to the PR next. kelpie tells the agent about events such as CI failing or passing, someone else commenting, reviewing, or pushing, a conflict with the base branch, and the merge. It ignores your own activity and most bots. The watch ends when the PR merges or closes, or when the agent's pane closes.
 
-  ```sh
-  kelpie watch github https://github.com/org/api/pull/421
-  ```
+```sh
+kelpie watch github https://github.com/org/api/pull/421
+```
 
-- **Give an agent the GitHub notifications of a repo or an org.** The agent can then triage new issues and PRs, comments, mentions, and review requests. These are your own unread GitHub notifications, so what arrives depends on what you watch and subscribe to on GitHub. kelpie cannot watch a single issue. An issue reaches the agent only as one of these notifications.
+Give an agent the GitHub notifications of a repo or an org. The agent gets a count by reason and the thread refs, then fetches the details to triage. These are your own unread notifications, so what arrives depends on what you watch and subscribe to on GitHub. An org watch reads your newest notifications (page 1) and keeps the org's threads. kelpie cannot watch a single issue, and an issue URL starts a watch on the notifications of its whole repository.
 
-  ```sh
-  kelpie watch github org/api   # one repository
-  kelpie watch github org       # every repository of the org
-  ```
+```sh
+kelpie watch github org/api   # one repository
+kelpie watch github org       # the org's threads among your newest notifications
+```
 
 ### Set reminders for an agent
 
-A reminder prompts the agent, not you. To get a reminder yourself, write the text so that the agent tells you.
+A reminder prompts the agent, not you. To get a reminder yourself, write the text as an instruction to tell you, as in the follow-up and release examples.
 
-- **Check a PR again tomorrow at 10.** `--at 10:00` means the next 10:00, so tomorrow if you run it after 10:00. `--subject` adds the PR's pending updates and its `fetch:` command.
+Check a PR again tomorrow at 10. `--at 10:00` means the next 10:00, so tomorrow if you run it after 10:00. `--subject` adds the PR's pending updates and its `fetch:` command.
 
-  ```sh
-  kelpie remind --at 10:00 --subject https://github.com/org/api/pull/421 "check for new reviews"
-  ```
+```sh
+kelpie remind --at 10:00 --subject https://github.com/org/api/pull/421 "check for new reviews"
+```
 
-- **Retry a flaky deploy in an hour.**
+Retry a flaky deploy in an hour. `--in` takes a duration such as `1h` or `90m`, and the reminder fires once.
 
-  ```sh
-  kelpie remind --in 1h "retry the staging deploy"
-  ```
+```sh
+kelpie remind --in 1h "retry the staging deploy"
+```
 
-- **Summarize what changed in your open PRs every weekday morning.**
+Ask the agent to summarize what changed in your open PRs every weekday morning. The agent does this with its own tools. kelpie only sends the prompt on schedule.
 
-  ```sh
-  kelpie remind --cron "0 9 * * 1-5" "summarize what changed in my open PRs since yesterday"
-  ```
+```sh
+kelpie remind --cron "0 9 * * 1-5" "summarize what changed in my open PRs since yesterday"
+```
 
-- **Follow up on a review that waits on someone else.**
+Follow up on a review that waits on someone else.
 
-  ```sh
-  kelpie remind --in 24h --subject https://github.com/org/api/pull/421 "if alice has not reviewed yet, tell me so I can ping them"
-  ```
+```sh
+kelpie remind --in 24h --subject https://github.com/org/api/pull/421 "if alice has not reviewed yet, tell me so I can ping them"
+```
 
-- **Prepare the release every Friday.**
+Ask the agent to prepare the release every Friday.
 
-  ```sh
-  kelpie remind --cron "0 10 * * 5" "prepare the release notes and tell me when the release is ready to cut"
-  ```
+```sh
+kelpie remind --cron "0 10 * * 5" "prepare the release notes and tell me when the release is ready to cut"
+```
 
 ## What the agent sees
 
