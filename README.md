@@ -97,6 +97,8 @@ The repository is private for now. To clone it or `go install` it, you need acce
 
 ### Run the daemon at login
 
+With herdr, skip this section: the [herdr plugin](#herdr-plugin) starts the daemon each time herdr starts. Install a unit only if you run agents without herdr, for example in Orca alone, or if kelpie must run while herdr is closed.
+
 `kelpie service install` runs `kelpie daemon` as a launchd LaunchAgent on macOS or as a systemd user unit on Linux, and starts it:
 
 ```sh
@@ -115,7 +117,7 @@ Before you run `kelpie service install`, stop any daemon from a kelpie build wit
 
 `kelpie watch`, `kelpie unwatch`, and `kelpie remind` act for the herdr pane in `$HERDR_PANE_ID` or the Orca worktree in `$ORCA_WORKTREE_ID`, so run them in the agent's terminal. If both are set, `$TERM_PROGRAM` decides. To act for another pane or worktree, pass `--workspace <id>` with the ID as `kelpie status` lists it. A herdr pane ID looks like `w1:p2`. It is not the ID of a herdr workspace.
 
-1. Start the daemon in a spare terminal and leave it running. To start it at every login instead, run [`kelpie service install`](#run-the-daemon-at-login). The [herdr plugin](#herdr-plugin) can also start it when herdr starts. To try kelpie first, run `kelpie daemon --dry-run`. It prints each update instead of typing it into a terminal.
+1. Start the daemon in a spare terminal and leave it running. With herdr, also link the [herdr plugin](#herdr-plugin), which starts the daemon each time herdr starts from then on. Without herdr, run [`kelpie service install`](#run-the-daemon-at-login) to start it at every login. To try kelpie first, run `kelpie daemon --dry-run`. It prints each update instead of typing it into a terminal.
 
    ```sh
    kelpie daemon
