@@ -2,11 +2,64 @@
 
 kelpie watches the GitHub pull requests you point it at and types an update into the coding agent that owns each one.
 
-A coding agent's turn ends after it pushes. When CI goes red, a reviewer asks for changes, someone pushes to the branch, or the PR merges, the agent does not know until you notice and tell it. kelpie is a small daemon that runs on your machine. It polls only what you asked it to watch, and when something changes it types a short `[kelpie]` update into the terminal where that agent runs, in a [herdr](https://herdr.dev) pane or an Orca worktree. It also delivers reminders, such as "check this PR again tomorrow at 10", back into the same terminal.
+## Use cases
 
-kelpie never acts on GitHub. It does not push, merge, comment, or mark notifications read. Text that other people wrote, such as comments, reviews, and titles, never enters the prompt. An update carries states, counts, logins, and check names, plus a `fetch:` command the agent runs to read the details with its own tools. The text of a reminder is the exception. You or your agent wrote it, and kelpie sends it unchanged.
+Run each command in the agent's terminal. The examples use the placeholder repository `org/api`.
+
+### Watch GitHub for an agent
+
+- **Follow a PR for the agent that owns it.** A coding agent's turn ends after it pushes, so it misses what happens to the PR next. kelpie tells the agent when CI fails or passes, a review or comment arrives, someone else pushes, the branch conflicts with its base, or the PR merges. The watch ends when the PR merges or closes.
+
+  ```sh
+  kelpie watch github https://github.com/org/api/pull/421
+  ```
+
+- **Give an agent the GitHub notifications of a repo or an org.** The agent can then triage new issues and PRs, comments, mentions, and review requests. These are your own unread GitHub notifications, so what arrives depends on what you watch and subscribe to on GitHub. kelpie cannot watch a single issue. An issue reaches the agent only as one of these notifications.
+
+  ```sh
+  kelpie watch github org/api   # one repository
+  kelpie watch github org       # every repository of the org
+  ```
+
+### Set reminders for an agent
+
+A reminder prompts the agent, not you. To get a reminder yourself, write the text so that the agent tells you.
+
+- **Check a PR again tomorrow at 10.** `--at 10:00` means the next 10:00, so tomorrow if you run it after 10:00. `--subject` adds the PR's pending updates and its `fetch:` command.
+
+  ```sh
+  kelpie remind --at 10:00 --subject https://github.com/org/api/pull/421 "check for new reviews"
+  ```
+
+- **Retry a flaky deploy in an hour.**
+
+  ```sh
+  kelpie remind --in 1h "retry the staging deploy"
+  ```
+
+- **Summarize what changed in your open PRs every weekday morning.**
+
+  ```sh
+  kelpie remind --cron "0 9 * * 1-5" "summarize what changed in my open PRs since yesterday"
+  ```
+
+- **Follow up on a review that waits on someone else.**
+
+  ```sh
+  kelpie remind --in 24h --subject https://github.com/org/api/pull/421 "if alice has not reviewed yet, tell me so I can ping them"
+  ```
+
+- **Prepare the release every Friday.**
+
+  ```sh
+  kelpie remind --cron "0 10 * * 5" "prepare the release notes and tell me when the release is ready to cut"
+  ```
 
 ## What the agent sees
+
+kelpie is a small daemon that runs on your machine. It polls only what you asked it to watch. When something changes, it types a short `[kelpie]` update into the terminal where the agent runs, in a [herdr](https://herdr.dev) pane or an Orca worktree.
+
+kelpie never acts on GitHub. It does not push, merge, comment, or mark notifications read. Text that other people wrote, such as comments, reviews, and titles, never enters the prompt. An update carries states, counts, logins, and check names, plus a `fetch:` command the agent runs to read the details with its own tools. The text of a reminder is the exception. You or your agent wrote it, and kelpie sends it unchanged.
 
 This is what the agent's terminal receives for two events on one PR. kelpie ends every update with the last line.
 
