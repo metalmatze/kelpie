@@ -42,6 +42,7 @@ type CLI struct {
 	Daemon    DaemonCmd    `cmd:"" help:"Watch sources and deliver updates to agents."`
 	Init      InitCmd      `cmd:"" help:"Write the default config, unless one exists."`
 	Service   ServiceCmd   `cmd:"" help:"Run the daemon at login as a launchd or systemd service."`
+	Acp       AcpCmd       `cmd:"" help:"Prompt agents that an ACP editor such as Zed runs."`
 	Source    struct {
 		Test SourceTestCmd `cmd:"" help:"Run one source once and print its observations."`
 	} `cmd:"" help:"Inspect configured sources."`
