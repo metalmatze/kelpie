@@ -541,7 +541,7 @@ testdata/             recorded raw CLI and MCP outputs per source
    - `pane.agent_status_changed` releases a queued delivery the moment a blocked or busy agent turns idle, instead of on the 30 s retry.
    - `pane.updated` refreshes cwd and branch for the branch binder.
    - The socket connection is reconnected with backoff and resynced with one `herdr pane list`; polling stays as the fallback while it is down.
-3. **M3 Reminders:** in-daemon scheduler, `kelpie remind`/`reminders`/`unremind` over the control socket, `--in`/`--at`/`--cron`, catch-up after sleep or restart, `reminders.json`, `reminder.due` through the router, the skill offering a reminder when the user asks to follow up later.
+3. **M3 Reminders (done):** in-daemon scheduler, `kelpie remind`/`reminders`/`unremind` over the control socket, `--in`/`--at`/`--cron`, catch-up after sleep or restart, `reminders.json`, `reminder.due` through the router, the skill offering a reminder when the user asks to follow up later.
 4. **M4 Slack, inbox and Orca:** `mcp` adapter, Claude Code MCP import, `mcp login`, Slack thread watch by URL, GitHub notifications inbox (done: `kelpie watch github` per repo or org, conditional `gh api`), repo-inbox binder, Orca host (done: `hosts.orca`, polling, `terminal send` with the blocked/busy guard), launchd/systemd.
 5. **M5 Planning:** Linear source, Linear-ID and link binders, confirmation popup.
 6. **M6 Ship and verify:** merge queue fields, Argo CD, Dash0 and Prometheus source configs, deploy binder.
