@@ -2,7 +2,7 @@ id = "kelpie"
 name = "kelpie"
 version = "0.1.0"
 min_herdr_version = "0.9.5"
-description = "Watch pull requests, issues and workflow runs for an agent with a ctrl-click or a key, see what kelpie watches, and keep its daemon running in the kelpie workspace's daemon tab. Needs kelpie, gh and jq on PATH."
+description = "Watch pull requests, issues, workflow runs and Linear issues for an agent with a ctrl-click or a key, see what kelpie watches, and keep its daemon running in the kelpie workspace's daemon tab. Needs kelpie, gh and jq on PATH."
 platforms = ["linux", "macos"]
 
 # Starts the daemon in the tab "daemon" of the workspace "kelpie" when none
@@ -11,7 +11,7 @@ platforms = ["linux", "macos"]
 [[startup]]
 command = ["bash", "kelpie-plugin.sh", "startup"]
 
-# Ctrl-click a pull request, issue or workflow run link to watch it for the pane it was clicked in.
+# Ctrl-click a pull request, issue, workflow run or Linear issue link to watch it for the pane it was clicked in.
 [[link_handlers]]
 id = "pull-request"
 title = "kelpie: watch this pull request"
@@ -30,9 +30,15 @@ title = "kelpie: watch this workflow run"
 pattern = "^https://github\\.com/[^/]+/[^/]+/actions/runs/[0-9]+"
 action = "watch-link"
 
+[[link_handlers]]
+id = "linear-issue"
+title = "kelpie: watch this Linear issue"
+pattern = "^https://linear\\.app/[^/]+/issue/[A-Za-z][A-Za-z0-9]*-[0-9]+"
+action = "watch-link"
+
 [[actions]]
 id = "watch-link"
-title = "kelpie: watch the clicked pull request, issue or workflow run"
+title = "kelpie: watch the clicked pull request, issue, workflow run or Linear issue"
 contexts = ["pane"]
 command = ["bash", "kelpie-plugin.sh", "watch-link"]
 
