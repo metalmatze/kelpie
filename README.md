@@ -1,6 +1,6 @@
 # kelpie
 
-kelpie types GitHub pull request, issue and workflow run updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
+kelpie types GitHub pull request, issue and workflow run updates, GitHub notifications, Linear issue updates, and reminders into the terminal of the coding agent that owns them.
 
 ## Use cases
 
@@ -31,6 +31,15 @@ Give an agent the GitHub notifications of a repo or an org. The agent gets a cou
 ```sh
 kelpie watch github org/api   # one repository
 kelpie watch github org       # the org's threads among your newest notifications
+```
+
+### Watch Linear for an agent
+
+Follow a Linear issue for the agent that works on it. kelpie tells the agent when someone else changes the status or the assignee, or comments, and when an issue that blocks it is completed or canceled. The watch ends when the issue is completed or canceled, even if you did it yourself. kelpie refuses an issue that is already completed or canceled.
+
+```sh
+kelpie auth login linear     # once: paste a Linear personal API key with Read permission
+kelpie watch linear ENG-123  # or the issue's URL
 ```
 
 ### Set reminders for an agent
@@ -94,6 +103,7 @@ kelpie needs:
 - [herdr](https://herdr.dev) 0.9.5 or later, the Orca app, or both. kelpie reaches only agents that run in a herdr pane or an Orca terminal. kelpie uses herdr by default. To use Orca, see [Orca](#orca).
 - The GitHub CLI `gh`, logged in (`gh auth status`). kelpie uses the same GitHub access as your agent.
 - `jq` and `bash`, for the herdr plugin only.
+- For Linear only: `curl`, and a Linear personal API key with Read permission, stored once with `kelpie auth login linear`. Without a key, the daemon logs one warning at start. To turn the Linear sources off, add `{name: linear, enabled: false}` and `{name: linear-issue, enabled: false}` to `sources` in your [config file](#configuration).
 
 Clone the repository and install the binary. You need the checkout for the herdr plugin and the agent skill too.
 
@@ -178,13 +188,13 @@ Before you run `kelpie service install`, stop any daemon from a kelpie build wit
    r1   pane wX:p2    Wed Nov 4 10:00: check for new reviews [github:prometheus-community/pyrra#2013]
    ```
 
-To stop a watch early, run `kelpie unwatch github <target>` with the same target, or `kelpie unwatch subject <subject>` with a subject as `kelpie status` lists it. Other panes that watch the same subject keep their watch.
+To stop a watch early, run `kelpie unwatch github <target>` or `kelpie unwatch linear <issue>` with the same target, or `kelpie unwatch subject <subject>` with a subject as `kelpie status` lists it. Other panes that watch the same subject keep their watch.
 
 `kelpie --help` lists the commands, and `kelpie <command> --help` lists the flags of one command.
 
 ## How it works
 
-`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, and an issue or a notification inbox every 60 seconds. kelpie compares each result with the previous one and turns the differences into events, for example:
+`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, and an issue or a notification inbox every 60 seconds. For Linear, which has no CLI, it runs `curl` against Linear's GraphQL API with the key from `kelpie auth login linear`: a watched issue every 60 seconds, and the issues assigned to you every 2 minutes. kelpie compares each result with the previous one and turns the differences into events, for example:
 
 - `checks.failed`: a required check failed. `checks.passed`: all required checks passed.
 - `review.submitted` and `comment.added`: someone reviewed or commented.
@@ -193,6 +203,7 @@ To stop a watch early, run `kelpie unwatch github <target>` with the same target
 - `state.merged` and `state.closed`: the PR or issue is done, and the watch ends.
 - `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
 - `notifications.new`: threads in a watched inbox are new or changed.
+- `status.changed`, `assignee.changed`, `comment.added` and `blocker.done` on a Linear issue, and `state.completed` or `state.canceled`, which end the watch.
 
 kelpie ignores your own actions, and the actions of bots that are not in `rules.allow_bots`. By default, events wait 30 seconds so that a burst arrives as one update. Failed checks, merges, and closed issues wait 5 seconds.
 
@@ -211,7 +222,7 @@ herdr plugin link "$PWD/herdr-plugin"
 herdr runs the startup hook at the next herdr server start, not when you link the plugin. The plugin needs `kelpie`, `gh`, and `jq` on herdr's `PATH`. Set `KELPIE_BIN` to use a `kelpie` binary from somewhere else. The plugin adds:
 
 - A startup hook. If no daemon answers, it runs `kelpie daemon` in the tab "daemon" of the workspace "kelpie". It creates the workspace and the tab if they do not exist.
-- A link handler. Ctrl-click a pull request or issue link in a pane to watch it for the pane's agent. Ctrl is the modifier on macOS too. herdr handles the click only while `ui.mouse_capture` is on, which is the default.
+- A link handler. Ctrl-click a pull request, issue, workflow run or Linear issue link in a pane to watch it for the pane's agent. Ctrl is the modifier on macOS too. herdr handles the click only while `ui.mouse_capture` is on, which is the default.
 - The action `kelpie.watch-pr`, which watches the PR of the focused pane's branch.
 - The action `kelpie.status`, which opens `kelpie status` in a popup.
 
@@ -242,6 +253,7 @@ kelpie reports a `kelpie` token on every pane it watches for. The token has one 
 | `conflict` | The PR conflicts with its base branch. |
 | `issue #17 → #20` | A watched issue, and the open or merged PRs that will close it. `closed` follows the number of a closed issue. |
 | `owner/repo 🔔22`, `org 🔔22` | Unread notification threads, up to the 50 most recent. |
+| `ENG-123 In Review ⛔1` | A watched Linear issue, its status, and how many issues that block it are still open. |
 | `⏰3` | Pending reminders for the pane. |
 
 herdr shows the token only where your sidebar layout asks for it. Add a `$kelpie` row to `~/.config/herdr/config.toml`. The first two rows are herdr's default agent layout:

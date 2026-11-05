@@ -717,8 +717,8 @@ sources:
   # completed or canceled (Duplicate is a canceled state) or the pane goes
   # away. Same shape and transitions as linear, every 60 s like a GitHub
   # issue, with larger pages since it is one issue. issue(id:) takes the
-  # identifier; an issue moved to another team keeps answering to its old
-  # one, so the subject stays the one watched.
+  # identifier. The map keeps the subject that was watched, since the
+  # identifier changes when the issue moves to another team.
   - name: linear-issue
     adapter: cli
     every: 60s
