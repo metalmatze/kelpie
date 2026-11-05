@@ -29,45 +29,82 @@ func (c *AuthLoginCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	token, err := readSecret(in.Prompt)
+	token, err := readSecret(ctx, in.Prompt)
+	if err == nil {
+		err = auth.Set(ctx, in.Name, token)
+	}
+	// main swallows context.Canceled to exit quietly on Ctrl-C, which here
+	// would read as success with nothing stored.
+	if ctx.Err() != nil {
+		return fmt.Errorf("cancelled; no %s credential stored", in.Name)
+	}
 	if err != nil {
 		return err
 	}
-	if err := auth.Set(ctx, in.Name, token); err != nil {
-		return err
-	}
 	fmt.Printf("stored the %s credential\n", in.Name)
-	// Stored first: a network hiccup should not lose the paste.
-	if who, err := in.Verify(ctx, token); err != nil {
-		fmt.Printf("but %s rejected it: %v\n", in.Name, err)
-	} else {
-		fmt.Printf("it works, as %s\n", who)
+	// Stored first: a network hiccup should not lose the paste. Failing still
+	// keeps login && something from going on with a key that does not work.
+	who, err := in.Verify(ctx, token)
+	if err != nil {
+		return fmt.Errorf("stored, but checking it with %s failed: %v; check again with kelpie auth status %s", in.Name, err, in.Name)
 	}
+	fmt.Printf("it works, as %s\n", who)
 	return nil
 }
 
-// readSecret reads a line without echo from a terminal, or all of stdin
+// readSecret reads a line without echo from a terminal, or from stdin
 // otherwise, so the secret never has to be an argument or a variable that a
-// shell history keeps.
-func readSecret(prompt string) (string, error) {
+// shell history keeps. Ctrl-C only cancels ctx, since main traps SIGINT, and
+// term.ReadPassword does not watch ctx: the read runs aside so a cancel can
+// restore echo and return instead of hanging at the prompt.
+func readSecret(ctx context.Context, prompt string) (string, error) {
 	fd := int(os.Stdin.Fd())
-	if term.IsTerminal(fd) {
-		fmt.Fprintf(os.Stderr, "%s: ", prompt)
-		b, err := term.ReadPassword(fd)
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
+	tty := term.IsTerminal(fd)
+	var state *term.State
+	if tty {
+		var err error
+		if state, err = term.GetState(fd); err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(b)), nil
+		fmt.Fprintf(os.Stderr, "%s: ", prompt)
 	}
-	b, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+	type result struct {
+		s   string
+		err error
 	}
-	if b = strings.TrimSpace(b); b == "" {
-		return "", errors.New("no credential on stdin")
+	done := make(chan result, 1)
+	go func() {
+		if tty {
+			b, err := term.ReadPassword(fd)
+			done <- result{string(b), err}
+			return
+		}
+		s, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		done <- result{s, err}
+	}()
+	var r result
+	select {
+	case r = <-done:
+	case <-ctx.Done():
+		if tty {
+			term.Restore(fd, state)
+		}
+		r.err = ctx.Err()
 	}
-	return b, nil
+	if tty {
+		fmt.Fprintln(os.Stderr)
+	}
+	if r.err != nil {
+		return "", r.err
+	}
+	s := strings.TrimSpace(r.s)
+	if s == "" {
+		return "", errors.New("no credential given")
+	}
+	return s, nil
 }
 
 type AuthStatusCmd struct {
