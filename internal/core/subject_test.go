@@ -48,18 +48,46 @@ func TestGitHubSubjectAsksGitHub(t *testing.T) {
 	}
 }
 
+func TestLinearSubject(t *testing.T) {
+	for in, want := range map[string]Subject{
+		"ENG-123":        "linear:ENG-123",
+		" eng-123 ":      "linear:ENG-123",
+		"linear:ENG-123": "linear:ENG-123",
+		"Linear:eng-7":   "linear:ENG-7",
+		"https://linear.app/acme/issue/ENG-123/fix-auth-on-login": "linear:ENG-123",
+		"https://linear.app/acme/issue/ENG-123":                   "linear:ENG-123",
+		"https://linear.app/acme/issue/ENG-123#comment-1a2b":      "linear:ENG-123",
+		"https://linear.app/acme/issue/eng-123/":                  "linear:ENG-123",
+		"https://linear.app/acme/project/kelpie-1a2b3c":           "",
+		"https://linear.app/acme/issue/ENG-123x":                  "",
+		"ENG":                                                     "",
+		"ENG-":                                                    "",
+		"123":                                                     "",
+		"acme/api#7":                                              "",
+		"":                                                        "",
+	} {
+		got, err := LinearSubject(in)
+		if got != want || (err == nil) != (want != "") {
+			t.Errorf("LinearSubject(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+}
+
 // Subjects of any provider pass through; anything else is GitHub input.
 func TestParseSubject(t *testing.T) {
 	for in, want := range map[string]Subject{
-		"github:acme/api#421":                  "github:acme/api#421",
-		"github-inbox:acme":                    "github-inbox:acme",
-		"github-issue:acme/api#7":              "github-issue:acme/api#7",
-		"https://github.com/acme/api/issues/7": "github-issue:acme/api#7",
-		" slack:C0123ABCD/1761811234.567890 ":  "slack:C0123ABCD/1761811234.567890",
-		"linear:ENG-123":                       "linear:ENG-123",
-		"https://github.com/acme/api/pull/421": "github:acme/api#421",
-		"acme/api":                             "github-inbox:acme/api",
-		"https://acme.slack.com/archives/C0":   "",
+		"github:acme/api#421":                            "github:acme/api#421",
+		"github-inbox:acme":                              "github-inbox:acme",
+		"github-issue:acme/api#7":                        "github-issue:acme/api#7",
+		"https://github.com/acme/api/issues/7":           "github-issue:acme/api#7",
+		" slack:C0123ABCD/1761811234.567890 ":            "slack:C0123ABCD/1761811234.567890",
+		"linear:ENG-123":                                 "linear:ENG-123",
+		"linear:eng-123":                                 "linear:ENG-123",
+		"https://linear.app/acme/issue/ENG-123/fix-auth": "linear:ENG-123",
+		"linear:ENG":                                     "",
+		"https://github.com/acme/api/pull/421":           "github:acme/api#421",
+		"acme/api":                                       "github-inbox:acme/api",
+		"https://acme.slack.com/archives/C0":             "",
 	} {
 		got, err := ParseSubject(in)
 		if got != want || (err == nil) != (want != "") {
