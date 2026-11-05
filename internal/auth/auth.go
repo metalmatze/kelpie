@@ -200,25 +200,23 @@ func unsupported() error {
 }
 
 // curl posts body to url with header on stdin as a curl config line, the way
-// a source passes its credential, and returns the response.
+// a source passes its credential. --fail-with-body keeps the response of a
+// rejected request, which says why; plain -f drops it.
 func curl(ctx context.Context, header, url, body string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sSfK", "-", "-H", "Content-Type: application/json", "--data", body, url)
+	cmd := exec.CommandContext(ctx, "curl", "-sSK", "-", "--fail-with-body", "-H", "Content-Type: application/json", "--data", body, url)
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("header = %q\n", header))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("curl %s: %w: %s", url, err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("curl %s: %w: %s", url, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
 
-// verifyLinear asks for the key's own user. An API key goes in the
-// Authorization header as is; Bearer is only for OAuth tokens.
+// verifyLinear asks for the key's own user. A rejected key comes back as an
+// HTTP 400 whose GraphQL errors name the reason.
 func verifyLinear(ctx context.Context, token string) (string, error) {
 	out, err := curl(ctx, "Authorization: "+token, "https://api.linear.app/graphql", `{"query":"{ viewer { name } }"}`)
-	if err != nil {
-		return "", err
-	}
 	var resp struct {
 		Data struct {
 			Viewer struct {
@@ -229,11 +227,23 @@ func verifyLinear(ctx context.Context, token string) (string, error) {
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return "", fmt.Errorf("api.linear.app: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		return "", fmt.Errorf("api.linear.app: %s", resp.Errors[0].Message)
+	jsonErr := json.Unmarshal(out, &resp)
+	switch {
+	case len(resp.Errors) > 0:
+		return "", redact(fmt.Errorf("api.linear.app: %s", resp.Errors[0].Message), token)
+	case err != nil:
+		return "", redact(err, token)
+	case jsonErr != nil:
+		return "", fmt.Errorf("api.linear.app: %w", jsonErr)
 	}
 	return resp.Data.Viewer.Name, nil
+}
+
+// redact keeps the token out of an error built from what the vendor sent
+// back, in case it echoes the header it rejected.
+func redact(err error, token string) error {
+	if !strings.Contains(err.Error(), token) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), token, "[redacted]"))
 }
