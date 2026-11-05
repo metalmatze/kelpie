@@ -158,6 +158,13 @@ func (c *SourceTestCmd) Run(ctx context.Context, g *Globals) error {
 	if _, err := diff.New(s.Name, s.Transitions, state.NewMemory()); err != nil {
 		return err
 	}
+	if _, err := diff.NewExpr(s.Badge); err != nil {
+		return fmt.Errorf("badge: %w", err)
+	}
+	refuse, err := diff.NewExpr(s.Refuse)
+	if err != nil {
+		return fmt.Errorf("refuse: %w", err)
+	}
 	var parent *core.Observation
 	if s.ForEach != nil {
 		if parent, err = c.parent(ctx, cfg, s); err != nil {
@@ -177,6 +184,14 @@ func (c *SourceTestCmd) Run(ctx context.Context, g *Globals) error {
 		for _, o := range obs {
 			if err := enc.Encode(o); err != nil {
 				return err
+			}
+			if refuse == nil {
+				continue
+			}
+			if why, err := refuse.Eval(o.Fields, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "refuse: %v\n", err)
+			} else if why != nil && why != "" {
+				fmt.Fprintf(os.Stderr, "kelpie watch would refuse %s: %v\n", o.Subject, why)
 			}
 		}
 	}

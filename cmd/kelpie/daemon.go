@@ -56,6 +56,7 @@ type runner struct {
 	pattern  *core.Pattern // for_each.subjects
 	children []*runner     // for_each.source pointing at this runner
 	badge    *diff.Expr
+	refuse   *diff.Expr
 }
 
 func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
@@ -207,6 +208,9 @@ func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 		if r.badge, err = diff.NewExpr(s.Badge); err != nil {
 			return fmt.Errorf("source %s: badge: %w", s.Name, err)
 		}
+		if r.refuse, err = diff.NewExpr(s.Refuse); err != nil {
+			return fmt.Errorf("source %s: refuse: %w", s.Name, err)
+		}
 		if fe := s.ForEach; fe != nil {
 			switch {
 			case fe.Subjects != "" && fe.Source != "":
@@ -301,7 +305,7 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 	}
 	// One poll up front, so a typo or a PR you cannot read fails here, at the
 	// command, instead of as a warning in the daemon log every tick.
-	if _, err := d.pollSubject(ctx, subject, false); err != nil {
+	if _, err := d.pollSubject(ctx, subject, false, true); err != nil {
 		return control.WatchResponse{}, err
 	}
 	ws, err := d.workspace(req.Workspace)
@@ -327,8 +331,9 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 // pollSubject runs every for_each.subjects source that handles subject once
 // and returns the fetch command of the first observation. With observe, the
 // observations go through the diff like a tick of the watch loop, so pending
-// changes are routed now.
-func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe bool) ([]string, error) {
+// changes are routed now. With refuse, a source's refuse expression can turn
+// the poll into an error, for a watch that would never see a change.
+func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe, refuse bool) ([]string, error) {
 	matched := false
 	var fetch []string
 	for _, r := range d.runners {
@@ -343,6 +348,13 @@ func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe 
 		_, obs, err := r.a.Once(ctx, &core.Observation{Subject: subject, Fields: fields})
 		if err != nil {
 			return nil, err
+		}
+		if refuse && r.refuse != nil {
+			for _, o := range obs {
+				if why, err := r.refuse.Eval(o.Fields, nil); err == nil && why != nil && why != "" {
+					return nil, fmt.Errorf("not watching %s: %v", subject, why)
+				}
+			}
 		}
 		if observe {
 			d.observer(r)(obs)
@@ -378,7 +390,7 @@ func (d *daemon) Remind(ctx context.Context, req control.RemindRequest) (core.Re
 		if r.Subject, err = core.ParseSubject(string(req.Subject)); err != nil {
 			return core.Reminder{}, err
 		}
-		if _, err := d.pollSubject(ctx, r.Subject, false); err != nil {
+		if _, err := d.pollSubject(ctx, r.Subject, false, false); err != nil {
 			return core.Reminder{}, err
 		}
 	}
@@ -414,7 +426,7 @@ func (d *daemon) fireReminder(r core.Reminder, late time.Duration) {
 		ev.Subject = core.Subject("reminder:" + r.ID)
 	} else {
 		ctx, cancel := context.WithTimeout(d.ctx, time.Minute)
-		fetch, err := d.pollSubject(ctx, r.Subject, true)
+		fetch, err := d.pollSubject(ctx, r.Subject, true, false)
 		cancel()
 		if err != nil {
 			slog.Warn("reminder: polling its subject failed", "id", r.ID, "subject", r.Subject, "err", err)

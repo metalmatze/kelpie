@@ -432,6 +432,89 @@ sources:
         terminal: true
         summary: '"closed\(if .reason != "" then " as \(.reason | ascii_downcase | gsub("_"; " "))" else "" end) by \(if .closer != "" then .closer else .state_actor end); kelpie stops watching"'
 
+  # One watched workflow run: kelpie watch github <run-url>, until the run
+  # completes. Polls the way gh run watch does: the run and its jobs on every
+  # tick, until the run's status is completed, and a run that has already
+  # completed is refused, not watched. gh run view --json fetches both, with
+  # the same calls gh run watch makes. Every 10 s rather than gh's 3 s: one
+  # tick is three REST calls (run, workflow, jobs), so 3 s would spend about
+  # 3,600 of the 5,000 an hour on a single run. Failure means what it means
+  # to gh: action_required, failure, startup_failure or timed_out; cancelled,
+  # skipped and neutral are not failures.
+  - name: github-run
+    adapter: cli
+    every: 10s
+    for_each: { subjects: "github-run:{owner}/{name}/{id}" }
+    run: [gh, run, view, "{id}", -R, "{owner}/{name}", --json, "status,conclusion,workflowName,attempt,headSha,url,jobs"]
+    # Job and step names come from the repo's workflow file, like check
+    # names; step logs never enter a prompt.
+    map: |
+      def failed: IN("action_required", "failure", "startup_failure", "timed_out");
+      "\($parent.owner)/\($parent.name)" as $repo
+      | [.jobs[] | select(.conclusion | failed) | {
+          id: .databaseId,
+          name: (.name + ([.steps[]? | select(.conclusion | failed) | .name][0] | if . then " (step \(.))" else "" end))
+        }] as $failed
+      | ([.jobs[] | select(.status != "completed")] | length) as $pending
+      | {
+        url: .url,
+        fields: {
+          id: $parent.id, repo: $repo,
+          workflow: .workflowName, status, conclusion, attempt,
+          head: .headSha[:9],
+          jobs: (.jobs | length),
+          pending: $pending,
+          failed: ($failed | length),
+          failed_jobs: [$failed[].name],
+          failed_job: ($failed[0].id // 0),
+          # Counts only while the run goes on, so the failure that ends it is
+          # reported once, by the final run.failed.
+          failed_early: (if .status != "completed" then ($failed | length) else 0 end),
+          outcome: (if .status != "completed" then "running"
+            elif (.conclusion | failed) then "failure"
+            elif .conclusion == "success" or .conclusion == "cancelled" then .conclusion
+            else "other" end)
+        },
+        fetch: ["gh", "run", "view", $parent.id, "-R", $repo]
+      }
+    refuse: 'if .status == "completed" then "run \(.id) (\(.workflow)) has already completed with \u0027\(.conclusion)\u0027" else "" end'
+    # run All ⋯, run All ⋯ ✗ (a job failed, others still run), run All ✓
+    badge: |
+      "run \(.workflow)"
+      + ({running: " ⋯", success: " ✓", failure: " ✗", cancelled: " cancelled"}[.outcome] // "")
+      + (if .outcome == "running" and .failed > 0 then " ✗" else "" end)
+    transitions:
+      # The first failed job while others still run, like gh pr checks
+      # --fail-fast, so the agent can start on it early.
+      - field: failed_early
+        increased: true
+        kind: run.failed
+        urgent: true
+        summary: '"\(.workflow): \(.failed) of \(.jobs) jobs failed (\(.pending) still running): \(.failed_jobs[:5] | join(", "))"'
+        fetch: '["gh", "run", "view", "--job", (.failed_job | tostring), "-R", .repo, "--log-failed"]'
+      - field: outcome
+        to: failure
+        kind: run.failed
+        urgent: true
+        terminal: true
+        summary: '"\(.workflow) completed with \(.conclusion | gsub("_"; " ")) on \(.head): \(.failed_jobs[:5] | join(", ") | if . == "" then "no failed job listed" else . end); kelpie stops watching"'
+        fetch: '["gh", "run", "view", .id, "-R", .repo, "--log-failed"]'
+      - field: outcome
+        to: success
+        kind: run.completed
+        terminal: true
+        summary: '"\(.workflow) succeeded on \(.head) (\(.jobs) jobs); kelpie stops watching"'
+      - field: outcome
+        to: cancelled
+        kind: run.completed
+        terminal: true
+        summary: '"\(.workflow) was cancelled; kelpie stops watching"'
+      - field: outcome
+        to: other
+        kind: run.completed
+        terminal: true
+        summary: '"\(.workflow) completed with \(.conclusion); kelpie stops watching"'
+
   # GitHub notifications of one repo: kelpie watch github owner/repo. Only
   # page 1, the 50 most recently updated unread threads, with the last
   # Last-Modified sent as If-Modified-Since. GitHub answers 304 until a thread

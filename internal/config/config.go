@@ -139,6 +139,10 @@ type Source struct {
 	// Badge is a jq expression over the fields giving a short label, shown on
 	// the panes watching the subject. Empty: no label.
 	Badge string `yaml:"badge,omitempty"`
+	// Refuse is a jq expression over the fields of the poll kelpie watch
+	// makes up front. A non-empty string refuses the watch with that reason,
+	// like a run that has already completed: it would never change again.
+	Refuse string `yaml:"refuse,omitempty"`
 }
 
 // ForEach runs a source once per subject instead of once for everything, the
@@ -232,7 +236,7 @@ func Parse(file []byte) (*Config, error) {
 	}
 	for i := range cfg.Sources {
 		src := &cfg.Sources[i]
-		for _, e := range []*string{&src.Map, &src.Badge} {
+		for _, e := range []*string{&src.Map, &src.Badge, &src.Refuse} {
 			*e = withDefs(cfg.Defs, *e)
 		}
 		for j := range src.Transitions {

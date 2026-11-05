@@ -174,6 +174,7 @@ Every source is a command an agent could run itself: the vendor's CLI, or `curl`
 | --- | --- | --- | --- | --- | --- |
 | GitHub PR | `cli`, per watched PR | `gh` | `gh`'s own | `gh api graphql` for one PR every 30 s, and for its checks every 15 s while they run | checks, reviews, comments, pushes, title, description, base, labels, review requests, draft, conflicts, merged/closed |
 | GitHub issue | `cli`, per watched issue | `gh` | `gh`'s own | `gh api graphql` for one issue every 60 s | comments, labels, assignees, milestone, title, description, PRs referencing or closing it opened/merged, reopened, closed (as completed, not planned or duplicate) |
+| GitHub Actions run | `cli`, per watched run | `gh` | `gh`'s own | `gh run view <id> --json status,conclusion,jobs,...` every 10 s, until the run completes | first failed job while others run, run failed, run completed (succeeded, cancelled, other) |
 | GitHub notifications | `cli`, per watched repo or org | `gh` | `gh`'s own | `gh api repos/o/r/notifications` (an org: `gh api notifications`, filtered), page 1, conditional, every 60 s | `notifications.new` |
 | Slack threads | `cli`, per watched thread | `curl` | `kelpie auth` (`slack`) | `conversations.replies?channel=…&ts=…` every 60 s | `slack.replied` |
 | Linear | `cli` | `curl` | `kelpie auth` (`linear`) | GraphQL at `api.linear.app/graphql` for issues assigned to you or bound to a workspace, every 120 s | status, assignee, comments, blocker done |
@@ -221,6 +222,16 @@ kelpie auth logout slack
 - **Actors from the timeline.** An issue has no "last labeler" field, so the query takes the newest timeline item of each kind (`LABELED_EVENT`/`UNLABELED_EVENT`, `ASSIGNED_EVENT`, `RENAMED_TITLE_EVENT`, `MILESTONED_EVENT`, `CLOSED_EVENT`/`REOPENED_EVENT`) and the issue's `editor` for the description. `ignore_actors` then drops your own changes and bots'. `pr.linked` takes the PR's author, so a PR the agent opened is not news to it; several new PRs by different authors have no single actor and always go through. `state.closed` and `pr.merged` have no actor: closing ends the watch even when you closed the issue.
 - **No text of others in the prompt.** Title and description are stored only to detect edits. Label names and the milestone title are maintainers' short labels and enter the summary, as PR labels do.
 - **Not covered:** reactions, comment edits, a PR linked and unlinked within one poll, and project board fields.
+
+### Workflow runs are watched like gh run watch
+
+`kelpie watch github https://github.com/org/api/actions/runs/42043979918` watches one GitHub Actions run, as `github-run:org/api/42043979918`, until it completes. Any page of the run works, `/job/<id>` and `/attempts/<n>` included. The use case is a merge whose real effect happens later, in a deploy workflow on the default branch. Before this, the agent ran `gh run watch` in the background next to a `kelpie remind`.
+
+- **Polls the way `gh run watch` does.** Each tick of gh's watch loop fetches the run (`actions/runs/<id>`), its workflow for the name, and the run's jobs from `jobs_url`, 100 per page. The loop ends once the run's `status` is `completed`, and a run that has already completed is reported at once rather than watched. kelpie runs `gh run view <id> --json status,conclusion,workflowName,attempt,headSha,url,jobs`, which makes the same calls, and refuses a completed run at `kelpie watch` with its conclusion. Sources do that through `refuse`, a jq expression over the up-front poll.
+- **Every 10 s, not gh's 3 s.** One tick is three REST calls, so 3 s would spend about 3,600 of the 5,000 an hour on one run. 10 s costs about 1,100.
+- **Failure means what it means to gh.** `action_required`, `failure`, `startup_failure` and `timed_out` are failures (gh's `IsFailureState`); `cancelled`, `skipped` and `neutral` are not.
+- **Events.** `run.failed` early, for the first failed job while others still run, as `--fail-fast` would. Then one terminal event: `run.failed` (urgent) or `run.completed` with the conclusion. A failed job is named with its first failed step, because a deploy workflow is often one job of many steps, and "Build, Test, Publish and Deploy failed" says less than "(step Deploy)". The early event's fetch is `gh run view --job <id> --log-failed`, the final one's `gh run view <id> --log-failed`.
+- **Not covered:** a re-run after the run completed (same run ID, new attempt): the watch has ended by then, so watch it again. Following the runs a merge commit starts, without the agent looking them up, needs the PR watch to go on after `state.merged`; that belongs with following a PR to its Argo CD deploy.
 
 ### Slack threads are watched by URL
 

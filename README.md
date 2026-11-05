@@ -1,6 +1,6 @@
 # kelpie
 
-kelpie types GitHub pull request and issue updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
+kelpie types GitHub pull request, issue and workflow run updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
 
 ## Use cases
 
@@ -18,6 +18,12 @@ Follow an issue for the agent that works on it. kelpie tells the agent when some
 
 ```sh
 kelpie watch github https://github.com/org/api/issues/17
+```
+
+Follow a GitHub Actions run for the agent that waits on it, such as the deploy a merge starts. This is what `gh run watch` does, kept running in the daemon. kelpie tells the agent about the first failed job and its failing step while other jobs still run, and how the run ended. The watch ends when the run completes. kelpie refuses a run that has already completed and prints its conclusion.
+
+```sh
+kelpie watch github https://github.com/org/api/actions/runs/42043979918
 ```
 
 Give an agent the GitHub notifications of a repo or an org. The agent gets a count by reason and the thread refs, then fetches the details to triage. These are your own unread notifications, so what arrives depends on what you watch and subscribe to on GitHub. An org watch reads your newest notifications (page 1) and keeps the org's threads.
@@ -178,7 +184,7 @@ To stop a watch early, run `kelpie unwatch github <target>` with the same target
 
 ## How it works
 
-`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, and an issue or a notification inbox every 60 seconds. kelpie compares each result with the previous one and turns the differences into events, for example:
+`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, and an issue or a notification inbox every 60 seconds. kelpie compares each result with the previous one and turns the differences into events, for example:
 
 - `checks.failed`: a required check failed. `checks.passed`: all required checks passed.
 - `review.submitted` and `comment.added`: someone reviewed or commented.

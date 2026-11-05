@@ -13,6 +13,8 @@ var (
 
 	prURL    = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
 	issueURL = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)`)
+	// Any page of a run: the run itself, /job/<id> or /attempts/<n>.
+	runURL   = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/actions/runs/(\d+)`)
 	numShort = regexp.MustCompile(`^([\w.-]+)/([\w.-]+)#(\d+)$`)
 
 	// A single discussion has no subject of its own yet. Without this ownerURL
@@ -41,10 +43,12 @@ type IsPR func(owner, name, number string) (bool, error)
 // GitHubSubject accepts what a person or agent would paste about GitHub. A
 // pull request URL (any sub-page, like /files or #discussion_r1) is the PR:
 // github:owner/repo#123. An issue URL is the issue: github-issue:owner/repo#7.
-// owner/repo#123 is whichever isPR says, a PR when isPR is nil. A repo
-// (owner/repo), an org, or a github.com URL of either is its notifications:
-// github-inbox:owner/repo or github-inbox:owner. Other repo pages (/actions,
-// /tree/...) still mean the repo; a single discussion is an error.
+// A workflow run URL (any of its pages) is the run:
+// github-run:owner/repo/42043979918. owner/repo#123 is whichever isPR says, a
+// PR when isPR is nil. A repo (owner/repo), an org, or a github.com URL of
+// either is its notifications: github-inbox:owner/repo or github-inbox:owner.
+// Other repo pages (/actions, /tree/...) still mean the repo; a single
+// discussion is an error.
 //
 // Issues get a prefix of their own rather than sharing github: with PRs:
 // github-pr runs for every github: subject, and PR watches saved as github:
@@ -56,6 +60,9 @@ func GitHubSubject(s string, isPR IsPR) (Subject, error) {
 	}
 	if m := issueURL.FindStringSubmatch(s); m != nil {
 		return Subject(fmt.Sprintf("github-issue:%s/%s#%s", m[1], m[2], m[3])), nil
+	}
+	if m := runURL.FindStringSubmatch(s); m != nil {
+		return Subject(fmt.Sprintf("github-run:%s/%s/%s", m[1], m[2], m[3])), nil
 	}
 	if m := numShort.FindStringSubmatch(s); m != nil {
 		pr := true
@@ -78,7 +85,7 @@ func GitHubSubject(s string, isPR IsPR) (Subject, error) {
 		m = ownerShort.FindStringSubmatch(s)
 	}
 	if m == nil {
-		return "", fmt.Errorf("cannot parse %q: want a pull request or issue URL, owner/repo#number, owner/repo or an org", s)
+		return "", fmt.Errorf("cannot parse %q: want a pull request, issue or workflow run URL, owner/repo#number, owner/repo or an org", s)
 	}
 	if m[2] == "" {
 		return Subject("github-inbox:" + m[1]), nil

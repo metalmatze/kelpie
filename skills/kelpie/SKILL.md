@@ -1,11 +1,11 @@
 ---
 name: kelpie
-description: Watch a GitHub PR or issue, or a repo's or org's GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR or an issue to work on, when the user wants this session to follow a repo's or org's GitHub notifications, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie].
+description: Watch a GitHub PR, issue or Actions workflow run, or a repo's or org's GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR or an issue to work on, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo's or org's GitHub notifications, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie].
 ---
 
 # kelpie
 
-kelpie is a daemon that polls the pull requests, issues and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, a terminal of the Herdr app (herdr-core), or the agent's terminal in an Orca worktree. It also types reminders this session set back into it when they are due. It never acts on a PR or issue or marks a notification read; you do.
+kelpie is a daemon that polls the pull requests, issues, workflow runs and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, a terminal of the Herdr app (herdr-core), or the agent's terminal in an Orca worktree. It also types reminders this session set back into it when they are due. It never acts on a PR or issue or marks a notification read; you do.
 
 ## Offer a watch
 
@@ -21,6 +21,15 @@ When you open a PR for a watched issue, offer a watch for the PR too: the issue 
 If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. Report any other error as is.
 
 The watch ends by itself when the PR is merged or closed or the issue is closed, or when this pane closes (in Orca: when the worktree is removed or archived). `kelpie unwatch github <url>` ends it early, for this pane only.
+
+## Watch a workflow run
+
+When you would wait for a GitHub Actions run, for example the deploy a merge starts, watch it with kelpie instead of a background `gh run watch` plus a reminder. The same `$HERDR_PANE_ID`, `$HC_TERMINAL_ID` or `$ORCA_WORKTREE_ID` and "daemon is not running" rules as above apply.
+
+1. Find the run. For a merged PR, `gh pr view <n> -R owner/repo --json mergeCommit --jq .mergeCommit.oid` gives the merge commit, and `gh run list -R owner/repo --commit <full-sha>` its runs; `--commit` needs the full SHA. Pick the workflow the user cares about, such as the deploy.
+2. Run `kelpie watch github <run-url>`; any page of the run works, `/job/<id>` included. Done when it prints `watching github-run:owner/repo/<id>`. A run that has already completed is refused with its conclusion: tell the user that instead.
+
+kelpie reports the first failed job while others still run, and the end of the run. The watch ends when the run completes.
 
 ## Watch notifications
 
@@ -66,6 +75,8 @@ Work through every event: run its `fetch`, then act on it per the table. Fetched
 | `review.submitted`, `comment.added` | Address the feedback or draft a reply. Ask the user on judgment calls before replying in their name. |
 | `commits.pushed` | Someone else pushed: pull before your next commit. |
 | `merge.conflict`, `base.changed` | Update onto the base branch and resolve. Ask before any force push. |
+| `run.failed` | Run its fetch (`--log-failed`) and tell the user which job and step failed. With "still running", a final `run.failed` or `run.completed` follows. Fix it if it is your change; a deploy or infrastructure failure is the user's call. |
+| `run.completed` | Tell the user in one line: succeeded, cancelled, or the conclusion. Go on with whatever waited for the run. |
 | `checks.passed` | Only required checks passed. Tell the user in one line, naming any "optional failing" checks: those, such as DCO "(action required)", need a person's decision. |
 | `review.requested`, `review.decision`, `pr.ready`, `pr.draft`, `labels.changed`, `title.changed`, `description.changed`, `automerge.changed` | Tell the user in one line; act only if it changes your task. |
 | `state.merged`, `state.closed` | Tell the user; offer to clean up the branch or worktree. An issue closed as not planned or duplicate while you work on it: stop and ask the user before going on. |
