@@ -199,7 +199,7 @@ kelpie auth logout slack
 ```
 
 - **Stored in the system keychain:** macOS Keychain (`security`), Secret Service on Linux (`secret-tool`). Never in `config.yaml`, so the config stays shareable, and it works under launchd and systemd, which see no shell environment.
-- **Never in argv or logs.** A source names its credential and the stdin that carries it (`auth: { name: linear, stdin: 'header = "Authorization: {token}"' }`); the `cli` adapter reads it from the keychain on every poll and writes that stdin to the command, since arguments show up in `ps` and in kelpie's logs. A missing credential fails the poll with `no linear credential; run kelpie auth login linear`.
+- **Never in argv or logs.** Arguments show up in `ps` and in kelpie's logs, so the `cli` adapter writes the secret to the command's stdin. A source names its credential (`auth: linear`) and gets the integration's default stdin, for Linear the curl config line `header = "Authorization: {token}"`, or gives its own (`auth: { name: linear, stdin: '...' }`). The credential is read from the keychain on every poll; a missing one fails the poll with `no linear credential; run kelpie auth login linear`.
 - **Read-only.** kelpie only reads, so each credential asks for read scopes only: Linear's Read permission, and Slack's `channels:history`, `groups:history`, `im:history` and `mpim:history` user scopes.
 - **Slack needs an app.** Slack's API and its MCP server both take only a user token (`xoxp-`) from a registered Slack app, and its OAuth needs a client secret that an open-source binary cannot ship. So kelpie ships an app manifest; you create the app from it, install it (some workspaces need an admin to approve), and paste the user token. That is one heavier setup step, once.
 - **Linear could also use OAuth.** A personal API key is the first version; a Linear OAuth app (`kelpie auth login linear` opening a browser) can replace the paste later without changing sources.
@@ -460,7 +460,7 @@ sources:
   # Linear: GraphQL with a personal API key (no "Bearer" prefix for API keys).
   - name: linear
     adapter: cli
-    auth: { name: linear, stdin: 'header = "Authorization: {token}"' }
+    auth: linear      # curl -K - reads: header = "Authorization: <key>"
     run: [curl, -sfK, -, -H, "Content-Type: application/json", --data, '{"query":"{ viewer { assignedIssues(filter: {updatedAt: {gt: \"-P1D\"}}) { nodes { identifier url state { name } } } } }"}', "https://api.linear.app/graphql"]
     every: 120s
     map: '.data.viewer.assignedIssues.nodes[] | { subject: "linear:\(.identifier)", url: .url, fields: { status: .state.name }, fetch: [.url] }'

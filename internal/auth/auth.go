@@ -32,6 +32,10 @@ type Integration struct {
 	Name string
 	// Prompt tells what to paste on login.
 	Prompt string
+	// Stdin is what a source with the short form `auth: <name>` writes to
+	// its command, {token} being the secret: a curl config line for the
+	// vendor's usual header, since sources call vendor APIs with curl -K -.
+	Stdin string
 	// Verify calls the vendor with token and returns who it belongs to.
 	Verify func(ctx context.Context, token string) (string, error)
 }
@@ -40,6 +44,8 @@ var Integrations = []Integration{
 	{
 		Name:   "linear",
 		Prompt: "Linear personal API key, created with Read permission only (Settings > Security & access > Personal API keys)",
+		// An API key goes in as is; Bearer is only for OAuth tokens.
+		Stdin:  `header = "Authorization: {token}"`,
 		Verify: verifyLinear,
 	},
 }

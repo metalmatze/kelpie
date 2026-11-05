@@ -149,10 +149,39 @@ type Source struct {
 // Auth hands the command a credential from kelpie auth on stdin, in place
 // of stdin: in Stdin, {token} becomes the secret, as in
 // 'header = "Authorization: {token}"' for curl -K -. Never an argument,
-// which ps and kelpie's logs would show.
+// which ps and kelpie's logs would show. The short form `auth: linear`
+// leaves Stdin empty for the integration's own default.
 type Auth struct {
 	Name  string `yaml:"name"`
-	Stdin string `yaml:"stdin"`
+	Stdin string `yaml:"stdin,omitempty"`
+}
+
+func (a *Auth) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*a = Auth{Name: n.Value}
+		return nil
+	}
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: auth is an integration name or { name, stdin }", n.Line)
+	}
+	// Node.Decode does not inherit KnownFields, and a typo such as "stdn"
+	// would silently fall back to the default stdin.
+	for i := 0; i < len(n.Content); i += 2 {
+		if k := n.Content[i].Value; k != "name" && k != "stdin" {
+			return fmt.Errorf("line %d: auth has no field %q", n.Content[i].Line, k)
+		}
+	}
+	type plain Auth
+	return n.Decode((*plain)(a))
+}
+
+// MarshalYAML keeps the short form short in kelpie config show.
+func (a Auth) MarshalYAML() (any, error) {
+	if a.Stdin == "" {
+		return a.Name, nil
+	}
+	type plain Auth
+	return plain(a), nil
 }
 
 // ForEach runs a source once per subject instead of once for everything, the

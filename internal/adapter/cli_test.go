@@ -183,6 +183,25 @@ func TestAuthStdin(t *testing.T) {
 	}
 }
 
+// The short form auth: linear takes Linear's curl header line.
+func TestAuthDefaultStdin(t *testing.T) {
+	s := authSource()
+	s.Auth = &config.Auth{Name: "linear"}
+	c, err := New(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Auth.Stdin != "" {
+		t.Fatal("New changed the caller's config")
+	}
+	c.credential = func(context.Context, string) (string, error) { return "lin_api_secret", nil }
+	// cat echoes the stdin back; it is no JSON, so mapping it fails.
+	raw, _, _ := c.Once(context.Background(), nil)
+	if want := `header = "Authorization: lin_api_secret"`; string(raw) != want {
+		t.Fatalf("got %q, want %q", raw, want)
+	}
+}
+
 func TestAuthInvalid(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -47,8 +47,13 @@ func New(s config.Source) (*CLI, error) {
 	if s.Conditional && (len(s.Run) < 3 || s.Run[0] != "gh" || s.Run[1] != "api" || slices.Contains(s.Run, "--paginate")) {
 		return nil, fmt.Errorf("source %s: conditional needs run: [gh, api, <endpoint>, ...] without --paginate", s.Name)
 	}
-	if a := s.Auth; a != nil {
-		switch _, known := auth.Lookup(a.Name); {
+	if s.Auth != nil {
+		// A copy, so the default stdin does not leak into the shared config.
+		a := *s.Auth
+		in, known := auth.Lookup(a.Name)
+		a.Stdin = cmp.Or(a.Stdin, in.Stdin)
+		s.Auth = &a
+		switch {
 		case a.Name == "":
 			return nil, fmt.Errorf("source %s: auth needs a name, one of %s", s.Name, strings.Join(auth.Names(), ", "))
 		case !known:
