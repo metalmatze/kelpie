@@ -49,11 +49,6 @@ defs: |
   def prs_merged($old): ([$old.prs // [] | .[] | select(.state == "MERGED") | .ref]) as $seen
     | [.prs[] | select(.state == "MERGED" and (.ref as $r | $seen | index($r) | not))];
 
-  # Check contexts of a commit, bucketed like gh pr checks, keeping only the
-  # newest of re-runs so a check that failed and then passed on re-run is not
-  # failed. Only required checks decide pass or fail; optional failures, such
-  # as a DCO check waiting for a sign-off, are listed apart. A repo without
-  # required checks treats all as required.
   # One Linear issue as an observation, for the linear and linear-issue
   # sources. People are Linear display names, and the key's own user is @me,
   # so ignore_actors drops your own changes. A person acting through an
@@ -95,6 +90,11 @@ defs: |
       fetch: [.url]
     };
 
+  # Check contexts of a commit, bucketed like gh pr checks, keeping only the
+  # newest of re-runs so a check that failed and then passed on re-run is not
+  # failed. Only required checks decide pass or fail; optional failures, such
+  # as a DCO check waiting for a sign-off, are listed apart. A repo without
+  # required checks treats all as required.
   def checks_summary:
     def bucket:
       if .__typename == "StatusContext" then {SUCCESS: "pass", ERROR: "fail", FAILURE: "fail"}[.state] // "pending"
