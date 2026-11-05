@@ -6,8 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -16,6 +21,17 @@ import (
 //go:embed default.yaml
 var Default []byte
 
+// Starter is what kelpie init writes: a file that states nothing yet, so all
+// of Default applies until the person uncomments or adds something.
+//
+//go:embed starter.yaml
+var Starter []byte
+
+// Config is Default with the person's file layered over it, so a new or
+// fixed default source reaches everyone who has a file, without copying.
+// The file wins key by key in mappings; a list the file sets replaces the
+// default's, the way people expect `ignore_actors: [...]` to read. Sources
+// and defs merge by their own rules, see layer.
 type Config struct {
 	Hosts     Hosts     `yaml:"hosts"`
 	Delivery  Delivery  `yaml:"delivery"`
@@ -27,6 +43,10 @@ type Config struct {
 	// (github-pr and github-checks) judge it the same way.
 	Defs    string   `yaml:"defs"`
 	Sources []Source `yaml:"sources"`
+
+	// Warnings are parts of the file that shadow the default, which a full
+	// copy of an older default does without the person meaning to.
+	Warnings []string `yaml:"-"`
 }
 
 // Hosts lists the agent hosts kelpie delivers to. Enable several to reach
@@ -97,24 +117,28 @@ type Binders struct {
 	Branch bool `yaml:"branch"`
 }
 
+// omitempty here only keeps kelpie config show to what a source sets.
 type Source struct {
-	Name    string   `yaml:"name"`
-	Adapter string   `yaml:"adapter"`
-	Every   Duration `yaml:"every"`
-	ForEach *ForEach `yaml:"for_each"`
-	Run     []string `yaml:"run"`
-	Stdin   string   `yaml:"stdin"`
-	Slurp   bool     `yaml:"slurp"` // join multiple JSON documents (gh --paginate) into one array
+	Name string `yaml:"name"`
+	// Enabled false drops a source. An entry with only name and enabled
+	// switches a default source off or on without replacing it.
+	Enabled *bool    `yaml:"enabled,omitempty"`
+	Adapter string   `yaml:"adapter,omitempty"`
+	Every   Duration `yaml:"every,omitempty"`
+	ForEach *ForEach `yaml:"for_each,omitempty"`
+	Run     []string `yaml:"run,omitempty"`
+	Stdin   string   `yaml:"stdin,omitempty"`
+	Slurp   bool     `yaml:"slurp,omitempty"` // join multiple JSON documents (gh --paginate) into one array
 	// Conditional polls a REST endpoint through gh api with If-Modified-Since
 	// set to the last Last-Modified. A 304 means no change and costs no rate
 	// limit, and GitHub's X-Poll-Interval raises every. Needs run: [gh, api,
 	// ...] without --paginate, because gh would send the header for every page.
-	Conditional bool         `yaml:"conditional"`
-	Map         string       `yaml:"map"`
-	Transitions []Transition `yaml:"transitions"`
+	Conditional bool         `yaml:"conditional,omitempty"`
+	Map         string       `yaml:"map,omitempty"`
+	Transitions []Transition `yaml:"transitions,omitempty"`
 	// Badge is a jq expression over the fields giving a short label, shown on
 	// the panes watching the subject. Empty: no label.
-	Badge string `yaml:"badge"`
+	Badge string `yaml:"badge,omitempty"`
 }
 
 // ForEach runs a source once per subject instead of once for everything, the
@@ -129,14 +153,14 @@ type Source struct {
 //
 // Run arguments may use {field} placeholders from the parent's fields.
 type ForEach struct {
-	Subjects string `yaml:"subjects"`
-	Source   string `yaml:"source"`
-	While    Match  `yaml:"while"`
+	Subjects string `yaml:"subjects,omitempty"`
+	Source   string `yaml:"source,omitempty"`
+	While    Match  `yaml:"while,omitempty"`
 }
 
 type Match struct {
-	Field  string `yaml:"field"`
-	Equals any    `yaml:"equals"`
+	Field  string `yaml:"field,omitempty"`
+	Equals any    `yaml:"equals,omitempty"`
 }
 
 // Matches compares by JSON encoding, so a YAML int matches a float64 field.
@@ -147,22 +171,22 @@ func (m Match) Matches(fields map[string]any) bool {
 }
 
 type Transition struct {
-	Field     string `yaml:"field"`
-	From      any    `yaml:"from"`
-	To        any    `yaml:"to"`
-	Changed   bool   `yaml:"changed"`
-	Increased bool   `yaml:"increased"`
+	Field     string `yaml:"field,omitempty"`
+	From      any    `yaml:"from,omitempty"`
+	To        any    `yaml:"to,omitempty"`
+	Changed   bool   `yaml:"changed,omitempty"`
+	Increased bool   `yaml:"increased,omitempty"`
 	// Ignore lists placeholder values that mean "not known right now", like
 	// mergeable UNKNOWN while GitHub recomputes it. The last known value is
 	// kept, so CONFLICTING -> UNKNOWN -> CONFLICTING does not fire twice.
-	Ignore   []any  `yaml:"ignore"`
-	Kind     string `yaml:"kind"`
-	Urgent   bool   `yaml:"urgent"`
-	Terminal bool   `yaml:"terminal"`
+	Ignore   []any  `yaml:"ignore,omitempty"`
+	Kind     string `yaml:"kind,omitempty"`
+	Urgent   bool   `yaml:"urgent,omitempty"`
+	Terminal bool   `yaml:"terminal,omitempty"`
 	// jq expressions over the new fields, with the previous fields as $old.
-	Summary string `yaml:"summary"`
-	Actor   string `yaml:"actor"`
-	Fetch   string `yaml:"fetch"`
+	Summary string `yaml:"summary,omitempty"`
+	Actor   string `yaml:"actor,omitempty"`
+	Fetch   string `yaml:"fetch,omitempty"`
 }
 
 type Duration struct{ time.Duration }
@@ -186,12 +210,11 @@ func DefaultPath() string {
 	return filepath.Join(dir, "kelpie", "config.yaml")
 }
 
-// Load reads path, or the embedded default when path does not exist.
+// Load layers the file at path over Default. A missing file means Default
+// alone, so kelpie runs before kelpie init.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		data = Default
-	} else if err != nil {
+	data, err := read(path)
+	if err != nil {
 		return nil, err
 	}
 	cfg, err := Parse(data)
@@ -201,49 +224,147 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-func Parse(data []byte) (*Config, error) {
-	cfg := &Config{
-		Hosts: Hosts{
-			Herdr: Herdr{Bin: "herdr", Poll: Duration{15 * time.Second}},
-			Orca:  Orca{Poll: Duration{15 * time.Second}},
-			HC:    HC{Poll: Duration{15 * time.Second}},
-		},
-		Delivery: Delivery{
-			Debounce:       Duration{30 * time.Second},
-			UrgentDebounce: Duration{5 * time.Second},
-			Retry:          Duration{30 * time.Second},
-			Prefix:         "[kelpie]",
-		},
-		Reminders: Reminders{CatchUp: Duration{12 * time.Hour}},
-	}
-	// Unknown keys are errors: a typo like "transition:" would otherwise
-	// silently disable every event of a source.
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil {
+// Parse layers file over Default and prepends defs to every expression.
+func Parse(file []byte) (*Config, error) {
+	cfg, err := layer(file)
+	if err != nil {
 		return nil, err
 	}
-	for i, s := range cfg.Sources {
-		if s.Name == "" {
-			return nil, fmt.Errorf("sources[%d]: name is required", i)
+	for i := range cfg.Sources {
+		src := &cfg.Sources[i]
+		for _, e := range []*string{&src.Map, &src.Badge} {
+			*e = withDefs(cfg.Defs, *e)
 		}
-		if s.Every.Duration == 0 {
-			cfg.Sources[i].Every = Duration{60 * time.Second}
-		}
-		if cfg.Defs != "" {
-			src := &cfg.Sources[i]
-			for _, e := range []*string{&src.Map, &src.Badge} {
+		for j := range src.Transitions {
+			t := &src.Transitions[j]
+			for _, e := range []*string{&t.Summary, &t.Actor, &t.Fetch} {
 				*e = withDefs(cfg.Defs, *e)
-			}
-			for j := range src.Transitions {
-				t := &src.Transitions[j]
-				for _, e := range []*string{&t.Summary, &t.Actor, &t.Fetch} {
-					*e = withDefs(cfg.Defs, *e)
-				}
 			}
 		}
 	}
 	return cfg, nil
+}
+
+// Effective is the layered config at path as YAML, before defs are
+// prepended, which would repeat them in every expression.
+func Effective(path string) ([]byte, []string, error) {
+	data, err := read(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg, err := layer(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	var b bytes.Buffer
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(cfg); err != nil {
+		return nil, nil, err
+	}
+	return b.Bytes(), cfg.Warnings, nil
+}
+
+func read(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return data, err
+}
+
+// layer decodes Default and then the file into one Config. Sources merge by
+// name, and a file source replaces the default one whole rather than field
+// by field: run, stdin, map, transitions and badge are one program over one
+// data shape, so a file's map mixed with a newer default query (or the other
+// way round) would break without any error. defs append to the default's, so
+// a file adds helpers and keeps the shipped ones; a jq def of the same name
+// and arity shadows the earlier one for every expression, though not inside
+// default defs that already call it.
+//
+// A file source of a default's name is kept even when it is just an old copy:
+// kelpie cannot tell that from a deliberate change, so it warns instead.
+func layer(file []byte) (*Config, error) {
+	var cfg Config
+	if err := decode(Default, &cfg); err != nil {
+		return nil, fmt.Errorf("built-in default: %w", err)
+	}
+	builtin, builtinDefs := cfg.Sources, cfg.Defs
+	cfg.Sources, cfg.Defs = nil, ""
+	if err := decode(file, &cfg); err != nil {
+		return nil, err
+	}
+
+	sources := slices.Clone(builtin)
+	var replaced []string
+	for i, s := range cfg.Sources {
+		if s.Name == "" {
+			return nil, fmt.Errorf("sources[%d]: name is required", i)
+		}
+		if slices.ContainsFunc(cfg.Sources[:i], func(o Source) bool { return o.Name == s.Name }) {
+			return nil, fmt.Errorf("sources[%d]: %s is listed twice", i, s.Name)
+		}
+		j := slices.IndexFunc(sources, func(b Source) bool { return b.Name == s.Name })
+		toggle := s.Enabled != nil && reflect.DeepEqual(s, Source{Name: s.Name, Enabled: s.Enabled})
+		switch {
+		case j >= 0 && toggle:
+			sources[j].Enabled = s.Enabled
+		case j >= 0:
+			sources[j] = s
+			if s.Enabled == nil || *s.Enabled {
+				replaced = append(replaced, s.Name)
+			}
+		case toggle:
+			// A warning, not an error: a default source that a later kelpie
+			// renames or drops must not stop the daemon from starting.
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("sources: %s is switched on or off, but there is no built-in source of that name", s.Name))
+		default:
+			sources = append(sources, s)
+		}
+	}
+	cfg.Sources = slices.DeleteFunc(sources, func(s Source) bool { return s.Enabled != nil && !*s.Enabled })
+	for i := range cfg.Sources {
+		if cfg.Sources[i].Every.Duration == 0 {
+			cfg.Sources[i].Every = Duration{60 * time.Second}
+		}
+	}
+	if len(replaced) > 0 {
+		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("replaces built-in sources: %s. A replaced source no longer gets kelpie's fixes; delete it from the file unless you changed it on purpose", strings.Join(replaced, ", ")))
+	}
+
+	if cfg.Defs == "" {
+		cfg.Defs = builtinDefs
+	} else {
+		have := defNames(builtinDefs)
+		if again := slices.DeleteFunc(defNames(cfg.Defs), func(n string) bool { return !slices.Contains(have, n) }); len(again) > 0 {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("redefines built-in defs: %s. A redefined def no longer gets kelpie's fixes; delete it from the file unless you changed it on purpose", strings.Join(slices.Compact(again), ", ")))
+		}
+		cfg.Defs = builtinDefs + "\n" + cfg.Defs
+	}
+	return &cfg, nil
+}
+
+// decode fails on unknown keys: a typo like "transition:" would otherwise
+// silently disable every event of a source. A file of only comments is
+// empty, not an error.
+func decode(data []byte, cfg *Config) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
+var defName = regexp.MustCompile(`(?m)^def\s+([A-Za-z_][A-Za-z0-9_]*)`)
+
+func defNames(defs string) []string {
+	var names []string
+	for _, m := range defName.FindAllStringSubmatch(defs, -1) {
+		names = append(names, m[1])
+	}
+	slices.Sort(names)
+	return names
 }
 
 // withDefs leaves an empty expression empty: empty means "not set".

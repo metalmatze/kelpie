@@ -101,6 +101,9 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
+	for _, w := range cfg.Warnings {
+		slog.Warn("config: "+w, "file", g.Config)
+	}
 	st := state.NewMemory()
 	if err := st.PersistWatches(filepath.Join(control.StateDir(), "watches.json")); err != nil {
 		return err

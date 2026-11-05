@@ -83,7 +83,7 @@ func TestIncreased(t *testing.T) {
 // defaultSource builds the mapper and differ of a source from the default config.
 func defaultSource(t *testing.T, name string) (*Mapper, *Differ) {
 	t.Helper()
-	cfg, err := config.Parse(config.Default)
+	cfg, err := config.Parse(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

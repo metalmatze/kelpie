@@ -1,0 +1,26 @@
+# kelpie config, layered over the built-in default of the kelpie binary that
+# runs: state only what you change, and everything else follows the default
+# as kelpie updates it. `kelpie config show` prints the config in effect.
+#
+# - Settings merge key by key; a list (rules.ignore_actors,
+#   delivery.notify.kinds) replaces the default's list.
+# - A source with a built-in source's name replaces that source whole; a new
+#   name adds one. `- {name: github-inbox-org, enabled: false}` switches a
+#   built-in source off.
+# - defs are added after the built-in jq definitions.
+#
+# Restart the daemon after editing; kelpie reads this file only at start.
+
+# hosts:
+#   herdr:
+#     enabled: true
+#   orca:              # the Orca app
+#     enabled: true
+#   hc:                # herdr-core, behind the Herdr desktop app
+#     enabled: true
+
+# delivery:
+#   debounce: 30s
+
+# rules:
+#   allow_bots: ["cursor[bot]", "coderabbitai[bot]", "copilot-pull-request-reviewer[bot]"]
