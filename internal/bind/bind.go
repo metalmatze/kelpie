@@ -3,6 +3,7 @@ package bind
 import (
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -17,7 +18,10 @@ import (
 type Binder struct {
 	state  state.State
 	branch bool
-	now    func() time.Time
+	// LinearBranch binds linear:ENG-123 to the one workspace whose branch
+	// names the issue, as Linear's own branch names do (user/eng-123-fix-auth).
+	LinearBranch bool
+	now          func() time.Time
 
 	mu         sync.Mutex
 	workspaces map[string]host.Workspace
@@ -159,7 +163,7 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		}
 		b.state.DeleteBinding(ev.Subject, bd.Workspace)
 	}
-	if len(targets) > 0 || !b.branch {
+	if len(targets) > 0 || !b.branch && !(b.LinearBranch && linearID(ev.Subject) != "") {
 		return targets
 	}
 
@@ -202,6 +206,9 @@ func (b *Binder) Bindings(s core.Subject) []core.Binding { return b.state.Bindin
 func (b *Binder) AllBindings() []core.Binding { return b.state.AllBindings() }
 
 func matchesBranch(ws host.Workspace, ev core.Event) bool {
+	if id := linearID(ev.Subject); id != "" {
+		return linearBranch(id).MatchString(ws.Branch)
+	}
 	branch := ev.Bind["branch"]
 	if branch == "" || ws.Branch != branch {
 		return false
@@ -212,6 +219,22 @@ func matchesBranch(ws host.Workspace, ev core.Event) bool {
 		}
 	}
 	return false
+}
+
+// linearID is ENG-123 of linear:ENG-123, else empty.
+func linearID(s core.Subject) string {
+	id, _ := strings.CutPrefix(string(s), "linear:")
+	if id == string(s) {
+		return ""
+	}
+	return id
+}
+
+// linearBranch matches a branch naming the issue as a whole word, in any
+// case: eng-123-fix-auth and user/ENG-123, but not eng-1234 or xeng-123. No
+// repo check, unlike PRs: a Linear issue belongs to no repo.
+func linearBranch(id string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:^|[^a-z0-9])` + regexp.QuoteMeta(id) + `(?:$|[^0-9])`)
 }
 
 // unlisted stands in for a workspace whose host has not listed it yet. The

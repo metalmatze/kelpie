@@ -122,3 +122,35 @@ func TestAwaitedHostKeepsBindings(t *testing.T) {
 		t.Fatal("binding of a closed workspace kept")
 	}
 }
+
+// A Linear issue binds to the one workspace whose branch names it, in any
+// repo, and only with LinearBranch on.
+func TestLinearBranchBinding(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"},
+		{Host: "herdr", ID: "w2:p1", Branch: "eng-1234-other"},
+		{Host: "herdr", ID: "w3:p1", Branch: "main"},
+	})
+	ev := core.Event{Subject: "linear:ENG-123"}
+	if got := b.Resolve(ev); got != nil {
+		t.Fatalf("bound with LinearBranch off: %+v", got)
+	}
+	b.LinearBranch = true
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p1" || !got[0].New || got[0].Binding.Via != "branch" {
+		t.Fatalf("resolve: %+v", got)
+	}
+	// PRs still need binders.branch.
+	if got := b.Resolve(core.Event{Subject: "github:acme/api#1", Bind: map[string]string{"repo": "acme/api", "branch": "main"}}); got != nil {
+		t.Fatalf("PR bound by LinearBranch: %+v", got)
+	}
+	for branch, want := range map[string]bool{
+		"eng-123": true, "ENG-123-x": true, "u/eng-123": true, "feature_eng-123_x": true,
+		"eng-1234": false, "xeng-123": false, "eng-12": false, "": false,
+	} {
+		if got := linearBranch("ENG-123").MatchString(branch); got != want {
+			t.Errorf("branch %q matches ENG-123: %v, want %v", branch, got, want)
+		}
+	}
+}

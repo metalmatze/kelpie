@@ -129,6 +129,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 	d.binder = bind.New(st, cfg.Binders.Branch)
+	d.binder.LinearBranch = cfg.Binders.Linear
 	for _, h := range d.hosts {
 		d.binder.Await(h.Name())
 	}
@@ -289,16 +290,11 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 // polledOnItsOwn reports whether a for_each.subjects source runs a loop for
 // subject. That loop is the subject's source of events: it polls just this
 // subject, usually more often than a list does, and its terminal event ends
-// the watch.
+// the watch. A binding alone is not enough: one by branch starts no loop, and
+// the list is all that reports on it.
 func (d *daemon) polledOnItsOwn(subject core.Subject) bool {
-	if len(d.binder.Bindings(subject)) == 0 {
-		return false
-	}
 	for _, r := range d.runners {
-		if r.pattern == nil {
-			continue
-		}
-		if _, ok := r.pattern.Match(subject); ok {
+		if r.pattern != nil && r.a.Watching(subject) {
 			return true
 		}
 	}

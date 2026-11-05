@@ -98,6 +98,13 @@ func (c *CLI) Watch(ctx context.Context, parent core.Observation, observe func([
 	}()
 }
 
+// Watching reports whether a for_each loop runs for subject.
+func (c *CLI) Watching(subject core.Subject) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.watching[subject]
+}
+
 // loop polls until ctx ends or keep returns false. A conditional source sends
 // the Last-Modified of its last observed response along; on a 304 nothing is
 // observed and keep sees the previous observations, since nothing changed.

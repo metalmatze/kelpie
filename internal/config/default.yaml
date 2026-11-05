@@ -33,6 +33,9 @@ rules:
 
 binders:
   branch: false         # PRs are watched explicitly with kelpie watch
+  # A Linear issue's updates go to the one pane on a branch naming it, like
+  # user/eng-123-fix-auth. Several such panes: nobody, with a warning.
+  linear: true
 
 # jq definitions available in every map, summary, actor, fetch and badge.
 defs: |

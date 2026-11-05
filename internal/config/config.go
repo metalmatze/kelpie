@@ -115,6 +115,9 @@ type Rules struct {
 
 type Binders struct {
 	Branch bool `yaml:"branch"`
+	// Linear binds linear:ENG-123 to the one workspace on a branch naming
+	// the issue, like eng-123-fix-auth.
+	Linear bool `yaml:"linear"`
 }
 
 // omitempty here only keeps kelpie config show to what a source sets.
