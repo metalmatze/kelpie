@@ -87,8 +87,7 @@ defs: |
         assigner: ($assigned | if . then linear_who else "" end),
         assigned_at: $assigned.createdAt,
         comment_at: $comments[-1].at,
-        comment_times: [$comments[].at],
-        last_commenter: ($comments[-1].by // ""),
+        comments: $comments,
         blockers: $blockers,
         blockers_done: ([$blockers[] | select(.done)] | length)
       },
@@ -694,8 +693,12 @@ sources:
       - field: comment_at
         increased: true
         kind: comment.added
-        actor: .last_commenter
-        summary: '"\([.comment_times[] | select(. > ($old.comment_at // ""))] | length) new, latest by \(.last_commenter)"'
+        # Several authors have no single actor and always go through, so a
+        # reply of yours does not hide the comment it answers.
+        actor: '[.comments[] | select(.at > ($old.comment_at // "")) | .by] | unique | if length == 1 then .[0] else "" end'
+        summary: |
+          [.comments[] | select(.at > ($old.comment_at // ""))] as $new
+          | "\($new | length) new by \($new | map(.by | if . == "@me" then "you" elif . == "" then "someone" else . end) | unique | join(", "))"
       # Blockers are issues with a "blocks" relation to this one; done means
       # completed or canceled, so nothing blocks anymore.
       - field: blockers_done
