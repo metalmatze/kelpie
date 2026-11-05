@@ -28,7 +28,7 @@ import (
 )
 
 type Globals struct {
-	Config string `help:"Config file; the built-in default is used when it does not exist." type:"path" default:"${config}"`
+	Config string `help:"Config file, layered over the built-in default; it need not exist." type:"path" default:"${config}"`
 }
 
 type CLI struct {
@@ -41,9 +41,12 @@ type CLI struct {
 	Unremind  UnremindCmd  `cmd:"" help:"Cancel a reminder."`
 	Status    StatusCmd    `cmd:"" help:"List watches, reminders and queued updates."`
 	Daemon    DaemonCmd    `cmd:"" help:"Watch sources and deliver updates to agents."`
-	Init      InitCmd      `cmd:"" help:"Write the default config, unless one exists."`
-	Service   ServiceCmd   `cmd:"" help:"Run the daemon at login as a launchd or systemd service."`
-	Source    struct {
+	Init      InitCmd      `cmd:"" help:"Write a commented starter config, unless one exists."`
+	ConfigCmd struct {
+		Show ConfigShowCmd `cmd:"" help:"Print the config in effect: the built-in default with your file layered over it."`
+	} `cmd:"" name:"config" help:"Inspect the config."`
+	Service ServiceCmd `cmd:"" help:"Run the daemon at login as a launchd or systemd service."`
+	Source  struct {
 		Test SourceTestCmd `cmd:"" help:"Run one source once and print its observations."`
 	} `cmd:"" help:"Inspect configured sources."`
 }
@@ -111,10 +114,24 @@ func (InitCmd) Run(g *Globals) error {
 	if err := os.MkdirAll(filepath.Dir(g.Config), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(g.Config, config.Default, 0o644); err != nil {
+	if err := os.WriteFile(g.Config, config.Starter, 0o644); err != nil {
 		return err
 	}
 	fmt.Println("wrote", g.Config)
+	return nil
+}
+
+type ConfigShowCmd struct{}
+
+func (ConfigShowCmd) Run(g *Globals) error {
+	out, warnings, err := config.Effective(g.Config)
+	if err != nil {
+		return err
+	}
+	os.Stdout.Write(out)
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s: %s\n", g.Config, w)
+	}
 	return nil
 }
 
