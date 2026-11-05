@@ -6,7 +6,7 @@ import (
 )
 
 // Subject is a stable URI for a watched thing.
-// github:org/repo#421, linear:ENG-123, slack:C0123ABCD/1761811234.567890,
+// github:org/repo#421, github-issue:org/repo#17, linear:ENG-123, slack:C0123ABCD/1761811234.567890,
 // k8s:kind-dev/dev-eng-123/deploy/api
 type Subject string
 

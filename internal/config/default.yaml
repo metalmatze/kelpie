@@ -36,6 +36,16 @@ binders:
 
 # jq definitions available in every map, summary, actor, fetch and badge.
 defs: |
+  # GraphQL drops the [bot] suffix from a bot's login; the rules need it to
+  # tell cursor[bot] from a person.
+  def login: if . == null then "" elif .__typename == "Bot" then "\(.login)[bot]" else .login end;
+
+  # Pull requests of a github-issue observation that $old did not have yet,
+  # or did not have merged yet.
+  def prs_new($old): ($old.prs // [] | map(.ref)) as $seen | [.prs[] | select(.ref as $r | $seen | index($r) | not)];
+  def prs_merged($old): ([$old.prs // [] | .[] | select(.state == "MERGED") | .ref]) as $seen
+    | [.prs[] | select(.state == "MERGED" and (.ref as $r | $seen | index($r) | not))];
+
   # Check contexts of a commit, bucketed like gh pr checks, keeping only the
   # newest of re-runs so a check that failed and then passed on re-run is not
   # failed. Only required checks decide pass or fail; optional failures, such
@@ -107,7 +117,6 @@ sources:
     # The title and description are stored to detect edits but never enter a
     # prompt: summaries carry only states, counts, logins and branch names.
     map: |
-      def login: if . == null then "" elif .__typename == "Bot" then "\(.login)[bot]" else .login end;
       .data.repository.pullRequest | .commits.nodes[0].commit as $commit | {
         url: .url,
         fields: {
@@ -275,6 +284,153 @@ sources:
         kind: checks.passed
         summary: '"required checks passed (\(.passed))\(if (.optional_failed | length) > 0 then "; optional failing: \(.optional_failed[:5] | join(", "))" else "" end)"'
         fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+
+  # One watched issue: kelpie watch github <issue-url>, until it is closed or
+  # the pane goes away. A subject of its own, not github:, because GitHub
+  # numbers issues and PRs in one sequence and github-pr runs for every
+  # github: subject. Each change is attributed to the newest timeline event
+  # of its kind, so that ignore_actors drops your own labels, comments and
+  # edits; two kinds of change within one poll share that actor, as on PRs.
+  - name: github-issue
+    adapter: cli
+    every: 60s
+    for_each: { subjects: "github-issue:{owner}/{name}#{number}" }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      fragment author on Actor { login __typename }
+      fragment pr on PullRequest { number state author { ...author } repository { nameWithOwner } }
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          issue(number: $number) {
+            number url title body state stateReason
+            editor { ...author }
+            milestone { title }
+            labels(first: 50) { nodes { name } }
+            assignees(first: 50) { nodes { login } }
+            comments(last: 1) { totalCount nodes { author { ...author } } }
+            closedByPullRequestsReferences(first: 25, includeClosedPrs: true) { nodes { ...pr } }
+            refs: timelineItems(last: 50, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent {
+              willCloseTarget source { __typename ...pr }
+            } } }
+            stateEvent: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) { nodes {
+              ... on ClosedEvent { actor { ...author } closer { __typename ... on PullRequest { number } ... on Commit { abbreviatedOid } } }
+              ... on ReopenedEvent { actor { ...author } }
+            } }
+            labelEvent: timelineItems(last: 1, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) { nodes {
+              ... on LabeledEvent { actor { ...author } } ... on UnlabeledEvent { actor { ...author } }
+            } }
+            assignEvent: timelineItems(last: 1, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT]) { nodes {
+              ... on AssignedEvent { actor { ...author } } ... on UnassignedEvent { actor { ...author } }
+            } }
+            renameEvent: timelineItems(last: 1, itemTypes: [RENAMED_TITLE_EVENT]) { nodes { ... on RenamedTitleEvent { actor { ...author } } } }
+            milestoneEvent: timelineItems(last: 1, itemTypes: [MILESTONED_EVENT, DEMILESTONED_EVENT]) { nodes {
+              ... on MilestonedEvent { actor { ...author } } ... on DemilestonedEvent { actor { ...author } }
+            } }
+          }
+        }
+      }
+    # Title, description and milestone title are stored to detect edits; only
+    # the milestone title, like label names, enters a prompt. PRs are those
+    # that will close the issue (closing keyword or linked by hand) and those
+    # that mention it, by ref: #12, or owner/repo#12 from another repo.
+    map: |
+      .data.repository.issue as $i
+      | "\($parent.owner)/\($parent.name)" as $repo
+      | ([$i.closedByPullRequestsReferences.nodes[] | {pr: ., closes: true}]
+         + [$i.refs.nodes[] | select(.source.__typename == "PullRequest") | {pr: .source, closes: .willCloseTarget}])
+      | map({
+          ref: (if (.pr.repository.nameWithOwner | ascii_downcase) == ($repo | ascii_downcase) then "#\(.pr.number)" else "\(.pr.repository.nameWithOwner)#\(.pr.number)" end),
+          repo: .pr.repository.nameWithOwner, number: .pr.number, state: .pr.state,
+          author: (.pr.author | login), closes
+        })
+      | group_by(.ref) | map(.[0] + {closes: any(.[]; .closes)}) as $prs
+      | $i | {
+        url: .url,
+        fields: {
+          number, title, body, state,
+          reason: (.stateReason // ""),
+          repo: $repo,
+          labels: ([.labels.nodes[].name] | sort),
+          assignees: ([.assignees.nodes[].login] | sort),
+          milestone: (.milestone.title // ""),
+          comments: .comments.totalCount,
+          last_commenter: (.comments.nodes[0].author | login),
+          editor: (.editor | login),
+          state_actor: (.stateEvent.nodes[0].actor | login),
+          closer: (.stateEvent.nodes[0].closer | if .__typename == "PullRequest" then "PR #\(.number)" elif .__typename == "Commit" then "commit \(.abbreviatedOid)" else "" end),
+          labeler: (.labelEvent.nodes[0].actor | login),
+          assigner: (.assignEvent.nodes[0].actor | login),
+          renamer: (.renameEvent.nodes[0].actor | login),
+          milestoner: (.milestoneEvent.nodes[0].actor | login),
+          prs: $prs,
+          linked: ($prs | length),
+          merged: ([$prs[] | select(.state == "MERGED")] | length)
+        },
+        fetch: ["gh", "issue", "view", (.number | tostring), "-R", $repo, "--comments"]
+      }
+    # issue #57 → #60: the PRs that will close it, unless closed unmerged.
+    badge: |
+      "issue #\(.number)"
+      + (if .state == "CLOSED" then " closed" else "" end)
+      + ([.prs[] | select(.closes and .state != "CLOSED") | .ref] | if length > 0 then " → " + join(" ") else "" end)
+    transitions:
+      - field: comments
+        increased: true
+        kind: comment.added
+        actor: .last_commenter
+        summary: '"\(.comments - $old.comments) new, latest by \(.last_commenter)"'
+      - field: labels
+        changed: true
+        kind: labels.changed
+        actor: .labeler
+        summary: '"labels now: \(.labels | join(", ") | if . == "" then "none" else . end)"'
+      - field: assignees
+        changed: true
+        kind: assignees.changed
+        actor: .assigner
+        summary: '"assignees now: \(.assignees | join(", ") | if . == "" then "none" else . end)"'
+      - field: milestone
+        changed: true
+        kind: milestone.changed
+        actor: .milestoner
+        summary: 'if .milestone == "" then "milestone removed" else "milestone now: \(.milestone)" end'
+      - field: title
+        changed: true
+        kind: title.changed
+        actor: .renamer
+        summary: '"title edited"'
+        fetch: '["gh", "issue", "view", (.number | tostring), "-R", .repo, "--json", "title"]'
+      - field: body
+        changed: true
+        kind: description.changed
+        actor: .editor
+        summary: '"description edited"'
+        fetch: '["gh", "issue", "view", (.number | tostring), "-R", .repo, "--json", "body"]'
+      # A PR the agent opened itself is dropped as yours, unless the new PRs
+      # have several authors.
+      - field: linked
+        increased: true
+        kind: pr.linked
+        actor: '[prs_new($old)[].author] | unique | if length == 1 then .[0] else "" end'
+        summary: '"referenced by " + (prs_new($old) | map("PR \(.ref) (\(.state | ascii_downcase)\(if .closes then ", closes this issue" else "" end))") | join(", "))'
+        fetch: 'prs_new($old)[0] | ["gh", "pr", "view", (.number | tostring), "-R", .repo]'
+      - field: merged
+        increased: true
+        kind: pr.merged
+        summary: '(prs_merged($old) | map("PR \(.ref)\(if .closes then " (closes this issue)" else "" end)") | join(", ")) + " merged"'
+        fetch: 'prs_merged($old)[0] | ["gh", "pr", "view", (.number | tostring), "-R", .repo]'
+      - field: state
+        to: OPEN
+        kind: state.reopened
+        actor: .state_actor
+        summary: '"reopened by \(.state_actor)"'
+      # No actor: closing ends the watch, even when you closed it yourself.
+      - field: state
+        to: CLOSED
+        kind: state.closed
+        urgent: true
+        terminal: true
+        summary: '"closed\(if .reason != "" then " as \(.reason | ascii_downcase | gsub("_"; " "))" else "" end) by \(if .closer != "" then .closer else .state_actor end); kelpie stops watching"'
 
   # GitHub notifications of one repo: kelpie watch github owner/repo. Only
   # page 1, the 50 most recently updated unread threads, with the last

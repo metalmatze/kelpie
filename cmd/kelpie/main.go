@@ -121,7 +121,7 @@ func (InitCmd) Run(g *Globals) error {
 type SourceTestCmd struct {
 	Name    string `arg:"" help:"Source name."`
 	Raw     bool   `help:"Print the command's raw output instead of observations (for fixtures)."`
-	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, or a PR URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
+	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, or a PR or issue URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
 }
 
 func (c *SourceTestCmd) Run(ctx context.Context, g *Globals) error {
@@ -223,11 +223,11 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 }
 
 type WatchCmd struct {
-	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request, or the notifications of a repo or org."`
+	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request or an issue, or the notifications of a repo or org."`
 }
 
 type WatchGitHubCmd struct {
-	Target    string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
+	Target    string `arg:"" optional:"" help:"Pull request or issue URL, or owner/repo#number; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
 	Workspace string `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
@@ -273,12 +273,21 @@ func githubTarget(ctx context.Context, s string) (core.Subject, error) {
 		}
 		s = strings.TrimSpace(string(out))
 	}
-	return core.GitHubSubject(s)
+	return core.GitHubSubject(s, func(owner, name, number string) (bool, error) {
+		// The issues endpoint serves PRs too, with a pull_request key.
+		out, err := exec.CommandContext(ctx, "gh", "api", fmt.Sprintf("repos/%s/%s/issues/%s", owner, name, number), "--jq", ".pull_request != null").Output()
+		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return false, fmt.Errorf("gh api: %s", strings.TrimSpace(string(ee.Stderr)))
+		} else if err != nil {
+			return false, fmt.Errorf("gh api: %w", err)
+		}
+		return strings.TrimSpace(string(out)) == "true", nil
+	})
 }
 
 type UnwatchCmd struct {
 	Subject UnwatchSubjectCmd `cmd:"" default:"withargs" help:"Stop watching a subject as kelpie status lists it."`
-	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request, or the notifications of a repo or org."`
+	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request or an issue, or the notifications of a repo or org."`
 }
 
 type UnwatchSubjectCmd struct {
@@ -295,7 +304,7 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
 }
 
 type UnwatchGitHubCmd struct {
-	Target    string `arg:"" optional:"" help:"Pull request URL or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
+	Target    string `arg:"" optional:"" help:"Pull request or issue URL, or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
 	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
 }
 
@@ -327,7 +336,7 @@ func (StatusCmd) Run(ctx context.Context) error {
 		return err
 	}
 	if len(st.Watches) == 0 {
-		fmt.Println("watching nothing; run kelpie watch github <pr-url, repo or org> inside an agent's pane")
+		fmt.Println("watching nothing; run kelpie watch github <pr or issue url, repo or org> inside an agent's pane")
 	}
 	for _, w := range st.Watches {
 		fmt.Printf("%-50s pane %-8s since %s\n", w.Subject, w.Workspace, w.Since.Format("Jan 2 15:04"))
@@ -346,7 +355,7 @@ type RemindCmd struct {
 	In        time.Duration `xor:"when" help:"Due after this long, like 1h or 90m."`
 	At        string        `xor:"when" help:"Due at this local time: 10:00 (the next one), 2026-10-31T10:00, or RFC 3339."`
 	Cron      string        `xor:"when" help:"Due on this cron schedule, like '0 9 * * 1-5' or @daily; local time unless prefixed with CRON_TZ=."`
-	Subject   string        `help:"Pull request the reminder is about. Its pending updates and fetch command come with the reminder."`
+	Subject   string        `help:"Pull request or issue the reminder is about (its URL, or the subject as kelpie status lists it). Its pending updates and fetch command come with the reminder."`
 	Workspace string        `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 

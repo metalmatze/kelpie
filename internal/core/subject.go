@@ -11,52 +11,74 @@ var (
 	// slack:C0123ABCD/1761811234.567890. Not a URL: https: is followed by /.
 	subject = regexp.MustCompile(`^[a-z][a-z0-9-]*:[^/\s]\S*$`)
 
-	prURL   = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
-	prShort = regexp.MustCompile(`^([\w.-]+)/([\w.-]+)#(\d+)$`)
+	prURL    = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
+	issueURL = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)`)
+	numShort = regexp.MustCompile(`^([\w.-]+)/([\w.-]+)#(\d+)$`)
 
-	// A single issue or discussion has no subject of its own yet. Without this
-	// ownerURL would take its URL for the repo and start a repo-wide watch the
-	// person never asked for.
-	itemURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/(issues|discussions)/\d+`)
+	// A single discussion has no subject of its own yet. Without this ownerURL
+	// would take its URL for the repo and start a repo-wide watch the person
+	// never asked for.
+	discussionURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/discussions/\d+`)
 
 	ownerURL   = regexp.MustCompile(`^https?://github\.com/([\w.-]+)(?:/([\w.-]+))?(?:[/?#].*)?$`)
 	ownerShort = regexp.MustCompile(`^([\w.-]+)(?:/([\w.-]+))?$`)
 )
 
 // ParseSubject accepts a subject as kelpie status lists it, of any provider,
-// or what GitHubSubject accepts.
+// or what GitHubSubject accepts, owner/repo#123 taken as a PR.
 func ParseSubject(s string) (Subject, error) {
 	s = strings.TrimSpace(s)
 	if subject.MatchString(s) {
 		return Subject(s), nil
 	}
-	return GitHubSubject(s)
+	return GitHubSubject(s, nil)
 }
 
+// IsPR tells whether number is a pull request rather than an issue of
+// owner/name. GitHub numbers both in one sequence, so only GitHub knows.
+type IsPR func(owner, name, number string) (bool, error)
+
 // GitHubSubject accepts what a person or agent would paste about GitHub. A
-// pull request URL (any sub-page, like /files or #discussion_r1) or
-// owner/repo#123 is the PR: github:owner/repo#123. A repo (owner/repo), an
-// org, or a github.com URL of either is its notifications:
+// pull request URL (any sub-page, like /files or #discussion_r1) is the PR:
+// github:owner/repo#123. An issue URL is the issue: github-issue:owner/repo#7.
+// owner/repo#123 is whichever isPR says, a PR when isPR is nil. A repo
+// (owner/repo), an org, or a github.com URL of either is its notifications:
 // github-inbox:owner/repo or github-inbox:owner. Other repo pages (/actions,
-// /tree/...) still mean the repo; a single issue or discussion is an error.
-func GitHubSubject(s string) (Subject, error) {
+// /tree/...) still mean the repo; a single discussion is an error.
+//
+// Issues get a prefix of their own rather than sharing github: with PRs:
+// github-pr runs for every github: subject, and PR watches saved as github:
+// must keep working.
+func GitHubSubject(s string, isPR IsPR) (Subject, error) {
 	s = strings.TrimSpace(s)
-	m := prURL.FindStringSubmatch(s)
-	if m == nil {
-		m = prShort.FindStringSubmatch(s)
-	}
-	if m != nil {
+	if m := prURL.FindStringSubmatch(s); m != nil {
 		return Subject(fmt.Sprintf("github:%s/%s#%s", m[1], m[2], m[3])), nil
 	}
-	if m := itemURL.FindStringSubmatch(s); m != nil {
-		return "", fmt.Errorf("kelpie can't watch a single %s yet; %q covers the repo's notifications, %s included", strings.TrimSuffix(m[3], "s"), m[1]+"/"+m[2], m[3])
+	if m := issueURL.FindStringSubmatch(s); m != nil {
+		return Subject(fmt.Sprintf("github-issue:%s/%s#%s", m[1], m[2], m[3])), nil
 	}
-	m = ownerURL.FindStringSubmatch(s)
+	if m := numShort.FindStringSubmatch(s); m != nil {
+		pr := true
+		if isPR != nil {
+			var err error
+			if pr, err = isPR(m[1], m[2], m[3]); err != nil {
+				return "", fmt.Errorf("is %s a pull request or an issue? %w", s, err)
+			}
+		}
+		if pr {
+			return Subject(fmt.Sprintf("github:%s/%s#%s", m[1], m[2], m[3])), nil
+		}
+		return Subject(fmt.Sprintf("github-issue:%s/%s#%s", m[1], m[2], m[3])), nil
+	}
+	if m := discussionURL.FindStringSubmatch(s); m != nil {
+		return "", fmt.Errorf("kelpie can't watch a single discussion yet; %q covers the repo's notifications, discussions included", m[1]+"/"+m[2])
+	}
+	m := ownerURL.FindStringSubmatch(s)
 	if m == nil {
 		m = ownerShort.FindStringSubmatch(s)
 	}
 	if m == nil {
-		return "", fmt.Errorf("cannot parse %q: want a pull request URL, owner/repo#number, owner/repo or an org", s)
+		return "", fmt.Errorf("cannot parse %q: want a pull request or issue URL, owner/repo#number, owner/repo or an org", s)
 	}
 	if m[2] == "" {
 		return Subject("github-inbox:" + m[1]), nil
