@@ -34,6 +34,15 @@ type Config struct {
 type Hosts struct {
 	Herdr Herdr `yaml:"herdr"`
 	Orca  Orca  `yaml:"orca"`
+	HC    HC    `yaml:"hc"`
+}
+
+// HC is herdr-core, the terminal runtime behind the Herdr desktop app. The
+// herdr host above is the herdr TUI, a separate program.
+type HC struct {
+	Enabled bool     `yaml:"enabled"`
+	Socket  string   `yaml:"socket"`
+	Poll    Duration `yaml:"poll"`
 }
 
 type Orca struct {
@@ -197,6 +206,7 @@ func Parse(data []byte) (*Config, error) {
 		Hosts: Hosts{
 			Herdr: Herdr{Bin: "herdr", Poll: Duration{15 * time.Second}},
 			Orca:  Orca{Poll: Duration{15 * time.Second}},
+			HC:    HC{Poll: Duration{15 * time.Second}},
 		},
 		Delivery: Delivery{
 			Debounce:       Duration{30 * time.Second},

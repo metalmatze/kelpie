@@ -20,6 +20,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/host"
+	"github.com/metalmatze/kelpie/internal/host/hc"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/host/orca"
 	"github.com/metalmatze/kelpie/internal/route"
@@ -111,6 +112,9 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	}
 	if o := cfg.Hosts.Orca; o.Enabled {
 		d.hosts = append(d.hosts, &orca.Orca{Bin: o.Bin, Poll: o.Poll.Duration, Comment: o.Comment, CommentsFile: filepath.Join(control.StateDir(), "orca-comments.json")})
+	}
+	if c := cfg.Hosts.HC; c.Enabled {
+		d.hosts = append(d.hosts, &hc.HC{Socket: c.Socket, Poll: c.Poll.Duration})
 	}
 	if len(d.hosts) == 0 {
 		return errors.New("no host enabled")

@@ -10,14 +10,14 @@ import (
 )
 
 type Workspace struct {
-	Host   string   // herdr | orca
+	Host   string   // herdr | orca | hc
 	ID     string   // unique across hosts, see HostOf
 	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
 	Branch string
 	Path   string
 }
 
-var prefixed = []string{"orca"}
+var prefixed = []string{"orca", "hc"}
 
 // HostOf names the host a workspace ID belongs to. IDs are unique across
 // hosts so bindings, reminders and delivery queues can key on the ID alone,

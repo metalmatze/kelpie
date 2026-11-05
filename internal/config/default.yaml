@@ -9,6 +9,10 @@ hosts:
     bin: ""             # default: $ORCA_CLI_COMMAND, else orca (orca-ide on Linux)
     poll: 15s           # orca has no event stream
     comment: false      # show watches as the worktree's comment, replacing yours while any are shown
+  hc:                   # herdr-core, behind the Herdr desktop app; herdr above is the TUI
+    enabled: false
+    socket: ""          # default: $HC_SOCKET, else hc's default for $HC_SESSION
+    poll: 15s           # lists terminals this often while the event stream is down
 
 delivery:
   debounce: 30s

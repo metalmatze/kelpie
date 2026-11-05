@@ -21,6 +21,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/host"
+	"github.com/metalmatze/kelpie/internal/host/hc"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/host/orca"
 	"github.com/metalmatze/kelpie/internal/state"
@@ -65,11 +66,14 @@ func main() {
 }
 
 // callers detect the workspace a command runs in, one per host, keyed by
-// the TERM_PROGRAM the host sets.
+// the TERM_PROGRAM the host sets. hc sets none of its own (it passes on the
+// terminal it impersonates, like ghostty) and comes first: when herdr or Orca
+// runs inside an hc terminal, their TERM_PROGRAM picks them over it.
 var callers = []struct {
 	term   string
 	detect func() (string, bool)
 }{
+	{"", hc.Caller},
 	{"orca", orca.Caller},
 	{"herdr", herdr.Caller},
 }
@@ -86,7 +90,7 @@ func callerWorkspace(flag string) (string, error) {
 	var found []string
 	for _, c := range callers {
 		if id, ok := c.detect(); ok {
-			if strings.EqualFold(os.Getenv("TERM_PROGRAM"), c.term) {
+			if c.term != "" && strings.EqualFold(os.Getenv("TERM_PROGRAM"), c.term) {
 				return id, nil
 			}
 			found = append(found, id)
@@ -95,7 +99,7 @@ func callerWorkspace(flag string) (string, error) {
 	if len(found) > 0 {
 		return found[0], nil
 	}
-	return "", errors.New("not inside a herdr pane or an Orca terminal; pass --workspace <id as kelpie status lists it>")
+	return "", errors.New("not inside a herdr pane, an Orca terminal or an hc terminal; pass --workspace <id as kelpie status lists it>")
 }
 
 type InitCmd struct{}
