@@ -220,3 +220,19 @@ func TestAuthInvalid(t *testing.T) {
 		}
 	}
 }
+
+// curl --fail-with-body exits 22 on Linear's 400 and prints the GraphQL
+// answer; the error must carry its message, not only the exit status.
+func TestFailedCommandShowsGraphQLErrors(t *testing.T) {
+	c, err := New(config.Source{
+		Name: "linear", Adapter: "cli", Map: `.data`,
+		Run: []string{"sh", "-c", `printf '{"errors":[{"message":"Authentication required, not authenticated"}]}'; echo 'curl: (22) The requested URL returned error: 400' >&2; exit 22`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = c.Once(t.Context(), nil)
+	if err == nil || !strings.Contains(err.Error(), "Authentication required") {
+		t.Fatalf("err = %v, want Linear's message", err)
+	}
+}

@@ -107,8 +107,9 @@ func (c *CLI) loop(ctx context.Context, parent *core.Observation, observe func([
 		log = log.With("subject", parent.Subject)
 	}
 	var (
-		last  []core.Observation
-		since string
+		last    []core.Observation
+		since   string
+		lastErr string
 	)
 	for {
 		p, err := c.poll(ctx, parent, since)
@@ -116,9 +117,23 @@ func (c *CLI) loop(ctx context.Context, parent *core.Observation, observe func([
 			return
 		}
 		obs := p.obs
+		// A failure that repeats, such as a default source with no
+		// credential stored, is logged once, not every poll.
+		msg := ""
+		if err != nil {
+			msg = err.Error()
+		}
+		switch {
+		case err != nil && msg != lastErr:
+			log.Warn("poll failed", "err", err)
+		case err != nil:
+			log.Debug("poll failed again", "err", err)
+		case lastErr != "":
+			log.Info("poll works again")
+		}
+		lastErr = msg
 		switch {
 		case err != nil:
-			log.Warn("poll failed", "err", err)
 		case p.notModified:
 			log.Debug("not modified", "since", since)
 			obs = last
@@ -210,6 +225,11 @@ func (c *CLI) poll(ctx context.Context, parent *core.Observation, since string) 
 		}
 	}
 	if runErr != nil {
+		// curl --fail-with-body keeps a GraphQL API's answer to a 400, which
+		// says why, such as a revoked key; stderr only has the status.
+		if gqlErr := graphqlErrors(p.raw); gqlErr != nil {
+			return p, fmt.Errorf("%s: %w: %v", args[0], runErr, gqlErr)
+		}
 		return p, fmt.Errorf("%s: %w: %s", args[0], runErr, strings.TrimSpace(stderr.String()))
 	}
 	obs, err := c.mapper.Map(p.raw, parent)
