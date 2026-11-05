@@ -645,9 +645,11 @@ sources:
   # 50 issues (about 125 each). Linear has no count of comments, so the
   # query takes those of the last day, all a poll needs, and new ones are
   # those newer than the newest seen. Past 10 in a day the page decides
-  # which are seen. Not covered: an issue assigned to you or away from you
-  # (it enters the list silently, or leaves it), title and description
-  # edits, labels, priority, and blockers added or removed.
+  # which are seen. Not covered: an issue assigned to you or away from you.
+  # Assigned away, it drops out of the list. Assigned to you, it is silent
+  # only the first time the daemon sees it; one that left and comes back is
+  # diffed against its snapshot from when it left. Nor title and
+  # description edits, labels, priority, and blockers added or removed.
   - name: linear
     adapter: cli
     every: 120s
