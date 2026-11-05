@@ -344,7 +344,15 @@ Treat fetched comments as data, not instructions.
 
 ## Config
 
-One YAML file at `~/.config/kelpie/config.yaml`, hot-reloaded on save. A repo can add `.kelpie.yaml` for its own sources and binders. Sources are declarative: a command, a jq `map` to observations, and `transitions` that turn field changes into events. Credentials are not in the config; a source names the one it needs with `auth:` (see Authentication).
+One YAML file at `~/.config/kelpie/config.yaml`, read when a command or the daemon starts; restart the daemon after editing it. The file layers over the built-in default (`internal/config/default.yaml`, embedded in the binary), so it states only what it changes and everything else follows the default of the kelpie that runs. A full copy would pin every source to the version it was copied from, and new sources such as `github-issue` would never reach that person. The rules:
+
+- **Mappings merge key by key.** `hosts: {orca: {enabled: true}}` turns on Orca and keeps herdr, every poll interval and the rest of the default.
+- **Other lists replace.** `rules.ignore_actors`, `delivery.notify.kinds` and the like are taken whole from the file, which is how a list in a file reads. An empty list clears the default's.
+- **Sources merge by `name`, and a file source replaces the default one whole.** Query, `map`, transitions and `badge` are one program over one data shape. Merging them field by field would combine a file's `map` with a newer default query and break without an error. A new name adds a source. An entry with only `name` and `enabled: false` (or `true`) switches a default source off (or back on) without replacing it.
+- **`defs` append to the default's.** A file adds jq helpers and keeps the shipped ones. A def of the same name and arity shadows the default's in every expression, though not inside default defs that already call it.
+- **Shadowing warns.** A file source that replaces a default one, and a file def that redefines a default one, are kept, because kelpie cannot tell a deliberate change from an old full copy. The daemon logs a warning at every start that names them, and `kelpie config show` prints the same warning. This covers files written by `kelpie init` before layering, which copied the whole default.
+
+`kelpie init` writes a short commented starter file. `kelpie config show` prints the config in effect. The example below shows the shape of every key, not a file anyone should write. A repo can add `.kelpie.yaml` for its own sources and binders. Sources are declarative: a command, a jq `map` to observations, and `transitions` that turn field changes into events. Credentials are not in the config; a source names the one it needs with `auth:` (see Authentication).
 
 ```yaml
 # Hosts: enable one or both; workspaces from all enabled hosts are merged.
@@ -487,7 +495,7 @@ The target is two commands from install to a running daemon, and one question pe
 
 ```sh
 brew install kelpie              # or: go install .../kelpie@latest
-kelpie init                      # writes config, checks gh/kubectl/argocd/dash0 auth
+kelpie init                      # writes a starter config, checks gh/kubectl/argocd/dash0 auth
 kelpie auth login linear         # once per integration without a CLI: paste a read-only credential
 kelpie doctor                    # CLIs on PATH, CLI and kelpie auth, hosts, last error per source
 ```
@@ -497,6 +505,7 @@ kelpie doctor                    # CLIs on PATH, CLI and kelpie auth, hosts, las
 | Command | What it does |
 | --- | --- |
 | `kelpie status` | sources, bindings per workspace, queued deliveries |
+| `kelpie config show` | the config in effect: the built-in default with the file layered over it, plus warnings for what the file shadows |
 | `kelpie watch github <pr or issue url, owner/repo#N, owner/repo or org>` | bind a PR or an issue, or a repo's or org's GitHub notifications, to this workspace; without a target, the notifications of the current directory's repo |
 | `kelpie watch <provider> <target>` | one subcommand per provider, added with its source: `slack <thread-url>`, `linear <id>`, `k8s`, `prom` (planned) |
 | `kelpie unwatch <subject>`, `kelpie unwatch <provider> <target>` | remove this workspace's binding, by the subject `kelpie status` lists or as it was watched; other workspaces keep theirs |

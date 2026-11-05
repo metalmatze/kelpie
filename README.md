@@ -253,7 +253,7 @@ The same row works under `[ui.sidebar.spaces]`. The [herdr configuration docs](h
 
 ## Orca
 
-kelpie can also deliver to agents in the Orca app, next to herdr or instead of it. The Orca host is off by default. To turn it on, set `hosts.orca.enabled: true` in your [config file](#configuration) and restart the daemon. If your file has no `orca` block, add it under `hosts:`. To use Orca without herdr, also set `hosts.herdr.enabled: false`.
+kelpie can also deliver to agents in the Orca app, next to herdr or instead of it. The Orca host is off by default. To turn it on, set `hosts.orca.enabled: true` in your [config file](#configuration) and restart the daemon. To use Orca without herdr, also set `hosts.herdr.enabled: false`.
 
 ```yaml
 hosts:
@@ -290,17 +290,40 @@ Other agents in a herdr pane or an Orca worktree get the same updates without th
 
 ## Configuration
 
-kelpie runs on the built-in default, [`internal/config/default.yaml`](internal/config/default.yaml), until you write your own. To change it, write the default to `~/.config/kelpie/config.yaml` (or under `$XDG_CONFIG_HOME`) and edit that file:
+kelpie runs on the built-in default, [`internal/config/default.yaml`](internal/config/default.yaml). Your file, `~/.config/kelpie/config.yaml` (or under `$XDG_CONFIG_HOME`), layers over it. Put only what you change in your file. Everything else follows the default of the kelpie binary you run, so new sources and fixes reach you without copying. To write a commented starter file and print the config in effect:
 
 ```sh
 kelpie init
+kelpie config show
 ```
 
-Your file replaces the default file. kelpie does not merge the two, so a file without `sources:` watches nothing. Unknown keys are errors. kelpie reads the file only at start, so restart the daemon after you edit it. Every command takes `--config <path>` to use another file.
+For example, this file turns on Orca, keeps herdr and every default source, switches off the org notifications source, and adds a jq helper:
+
+```yaml
+hosts:
+  orca:
+    enabled: true
+sources:
+  - {name: github-inbox-org, enabled: false}
+defs: |
+  def short: .[:7];
+```
+
+The merge rules are:
+
+- Settings merge key by key.
+- A list, such as `rules.ignore_actors` or `delivery.notify.kinds`, replaces the default's list.
+- A source with the name of a default source replaces that source completely, not field by field. A source with a new name is added.
+- An entry with only `name` and `enabled: false` switches off a default source.
+- `defs` are added after the default's jq definitions.
+
+When your file replaces a default source or redefines a default def, kelpie prints a warning at start and in `kelpie config show`. Delete those entries from your file unless you changed them on purpose. A file that `kelpie init` wrote before this change is a full copy of the default at that time. It gets these warnings for every source. Trim it to the settings you changed, or move it away and run `kelpie init` again.
+
+Unknown keys are errors. kelpie reads the file only at start, so restart the daemon after you edit it. Every command takes `--config <path>` to use another file.
 
 Settings you may want to change are `delivery.debounce`, `delivery.notify.stuck`, and `rules.allow_bots`. The comments in the default file describe the rest.
 
-The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-inbox`, and `github-inbox-org`. A config file written before `github-issue` existed lacks it, so copy it from the default file to watch issues. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, and the inbox sources need `--subject`:
+The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-inbox`, and `github-inbox-org`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, and the inbox sources need `--subject`:
 
 ```sh
 kelpie source test github-pr --subject https://github.com/prometheus-community/pyrra/pull/2013
