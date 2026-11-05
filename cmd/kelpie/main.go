@@ -16,6 +16,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/metalmatze/kelpie/internal/adapter"
+	"github.com/metalmatze/kelpie/internal/auth"
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/control"
 	"github.com/metalmatze/kelpie/internal/core"
@@ -46,6 +47,7 @@ type CLI struct {
 		Show ConfigShowCmd `cmd:"" help:"Print the config in effect: the built-in default with your file layered over it."`
 	} `cmd:"" name:"config" help:"Inspect the config."`
 	Service ServiceCmd `cmd:"" help:"Run the daemon at login as a launchd or systemd service."`
+	Auth    AuthCmd    `cmd:"" help:"Store, check or remove kelpie's own credential for a vendor without a CLI, in the system keychain."`
 	Source  struct {
 		Test SourceTestCmd `cmd:"" help:"Run one source once and print its observations."`
 	} `cmd:"" help:"Inspect configured sources."`
@@ -59,7 +61,7 @@ func main() {
 	kctx := kong.Parse(&cli,
 		kong.Name("kelpie"),
 		kong.Description("Route SDLC events to the coding agent that owns the work."),
-		kong.Vars{"config": config.DefaultPath()},
+		kong.Vars{"config": config.DefaultPath(), "integrations": strings.Join(auth.Names(), ", ")},
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(&cli.Globals),
 	)
