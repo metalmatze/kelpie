@@ -37,7 +37,7 @@ When the user links or names a Linear issue to work on (`ENG-123` or a `linear.a
 
 Run `kelpie watch linear <ID or URL>`. Done when it prints `watching linear:ENG-123`. If it says `no linear credential; run kelpie auth login linear`, tell the user to run `kelpie auth login linear` themselves and paste a Linear personal API key with Read permission. Never handle the key yourself. An issue that is already completed or canceled is refused: tell the user.
 
-The watch ends when the issue is completed or canceled. `kelpie unwatch linear <ID>` ends it early, for this pane only. The `fetch:` of a Linear update is the issue URL: read it with whatever Linear tool you have, or ask the user.
+The watch ends when the issue is completed or canceled. `kelpie unwatch linear <ID>` ends it early, for this pane only. An issue assigned to the user reaches this pane without a watch while its branch names the issue (`user/eng-123-fix-auth`); its first update then says "bound to this workspace because its branch names ENG-123". The `fetch:` of a Linear update is the issue URL: read it with whatever Linear tool you have, or ask the user.
 
 ## Watch notifications
 

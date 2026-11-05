@@ -242,8 +242,8 @@ kelpie auth logout slack
 - **Actors are Linear's.** Linear names people by display name, not GitHub login, so `@me` in `ignore_actors` cannot match by name. The query asks for each user's `isMe`, and the map reports the key's own user as `@me`, which the rules drop. A person acting through an integration (`botActor.userDisplayName`, Slack for one) keeps their name; other integrations and automations become `<name>[bot]`. The actor of a status or assignee change is the newest history entry of that kind in the page; with none it stays empty, so a change is never dropped as yours on a guess.
 - **Cost.** About 30 requests an hour for the assigned list plus 60 per watched issue, against 2,500 an hour for an API key, a quota every Linear client of the same user shares. Linear rejects any query above 10,000 complexity points; with 50 assigned issues, pages of 10 comments, 10 history entries and 10 relations cost about 125 points per issue.
 - **Comments of the last day.** Linear connections have no `totalCount`, and the page order is not documented, so the query takes comments created within a day and calls those newer than the newest seen new. Past one page of them in a day, the page decides which are seen.
-- **One watch, one report.** An assigned issue that is also watched is observed by both sources. The daemon drops a list source's events for a subject that a `for_each.subjects` loop polls, so the watch alone reports it.
-- **Assigned issues need a binding.** Events of the `linear` source reach a workspace only through a binding, and today nothing binds a `linear:` subject except `kelpie watch linear`; the Linear-ID branch binder (see Binding) is still to come.
+- **One watch, one report.** An assigned issue that is also watched is observed by both sources. The daemon drops a list source's events for a subject while a `for_each.subjects` loop runs for it, so the watch alone reports it. A binding alone does not count: a branch binding starts no loop, and the list is then all that reports.
+- **Assigned issues bind by branch.** Events of the `linear` source reach a workspace through `kelpie watch linear`, or through `binders.linear` (on by default): `linear:ENG-123` binds to the one workspace whose branch names the issue as a whole word, in any case, as Linear's branch names do (`user/eng-123-fix-auth`; not `eng-1234`). No repo check, since a Linear issue belongs to no repo. The binding is made on the issue's first event after the branch is checked out, follows the branch like a PR's, lives in memory only, and ends with `state.completed` or `state.canceled`. Several workspaces on such a branch, such as an agent's pane and a shell pane in one worktree, get nothing and a warning until the confirmation queue exists. An issue on your branch but not assigned to you is not polled, so it needs `kelpie watch linear`.
 - **No key, no noise.** Both sources are in the default, and without a stored key every poll fails with `no linear credential; run kelpie auth login linear`. The adapter logs a repeating failure once, and again only when it changes or clears, so people who do not use Linear see one warning per daemon start. `{name: linear, enabled: false}` removes it.
 - **Not covered:** an issue newly assigned to you or away from you in the assigned list (it appears silently, as any first observation does, or drops out of the list), title, description, label, priority and estimate changes, and blockers added or removed.
 
@@ -328,7 +328,7 @@ Binders turn an event's subject into the workspaces that watch it. They run in o
 **Several watchers.** A binding is a subject and a workspace, so several agents can watch one subject: a PR's author and its reviewer, or every agent working in one repo watching its inbox. Each workspace gets its own copy of every event, with its own debounce and blocked queue. kelpie still polls the subject once, for as long as any workspace watches it. `kelpie status` lists one line per subject and workspace.
 
 1. **Explicit:** `kelpie watch <provider> <target>` from inside a workspace (herdr: `$HERDR_PANE_ID`; Orca: `$ORCA_WORKTREE_ID`; when both are set, the host `$TERM_PROGRAM` names wins, else Orca's), or `--workspace <id as kelpie status lists it>`. Always confident. Watching from a second workspace adds a binding instead of moving the first.
-2. **Branch:** kelpie keeps a workspace -> repo + branch map, refreshed on host events. A PR whose head equals that branch binds. A Linear ID in the branch name (`eng-123-fix-auth`) binds `linear:ENG-123`.
+2. **Branch:** kelpie keeps a workspace -> repo + branch map, refreshed on host events. A PR whose head equals that branch binds. A Linear ID in the branch name (`eng-123-fix-auth`) binds `linear:ENG-123` (`binders.linear`, on by default; PRs need `binders.branch`, off by default).
 3. **Repo inbox (planned):** a workspace whose branch is the repo's default branch (from `gh repo view --json defaultBranchRef`, cached) becomes that repo's inbox and receives `github-inbox:` subjects. If two workspaces sit on the default branch, the choice goes to the confirmation queue. Today `kelpie watch github <owner/repo>` from inside a workspace sets it explicitly.
 4. **Kubernetes:** a namespace pattern (`dev-{branch}`) or a label on the resource binds k8s subjects.
 5. **Link:** an event whose `Links` contains a bound subject binds to the same workspace. A Linear issue -> its PR -> its deploy -> its Dash0 check all reach one agent.
@@ -406,7 +406,7 @@ rules:
 binders:
   branch: true
   link: true
-  linear_id_pattern: '(?i)\b([a-z]{2,5}-\d+)\b'
+  linear: true                 # linear:ENG-123 -> the one workspace on a branch naming eng-123
   confirm_fuzzy: true
   verify_window: 1h
 
@@ -597,7 +597,7 @@ testdata/             recorded raw CLI and API outputs per source
    - The socket connection is reconnected with backoff and resynced with one `herdr pane list`; polling stays as the fallback while it is down.
 3. **M3 Reminders (done):** in-daemon scheduler, `kelpie remind`/`reminders`/`unremind` over the control socket, `--in`/`--at`/`--cron`, catch-up after sleep or restart, `reminders.json`, `reminder.due` through the router, the skill offering a reminder when the user asks to follow up later.
 4. **M4 Slack, inbox and Orca:** `kelpie auth` with keychain storage, the Slack app manifest, Slack thread watch by URL over the Web API, GitHub notifications inbox (done: `kelpie watch github` per repo or org, conditional `gh api`), repo-inbox binder, Orca host (done: `hosts.orca`, polling, `terminal send` with the blocked/busy guard), launchd/systemd.
-5. **M5 Planning:** Linear source over GraphQL with a read-only API key (done: `kelpie auth login linear`, the `linear` source for assigned issues, `kelpie watch linear`), Linear-ID and link binders, confirmation popup.
+5. **M5 Planning:** Linear source over GraphQL with a read-only API key (done: `kelpie auth login linear`, the `linear` source for assigned issues, `kelpie watch linear`), Linear-ID binder (done: `binders.linear`, by branch), link binder, confirmation popup.
 6. **M6 Ship and verify:** merge queue fields, Argo CD, Dash0 and Prometheus source configs, deploy binder.
 7. **M7 Local runtime:** `cli-watch` adapter, kubectl source, namespace binder.
 8. **M8 Persistence and sharing:** a persistent `State` implementation (queue, last snapshots; watches and reminders are already saved), source configs others can install, optional webhook adapter.
