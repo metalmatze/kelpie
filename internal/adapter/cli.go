@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metalmatze/kelpie/internal/auth"
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
@@ -29,6 +30,8 @@ import (
 type CLI struct {
 	source config.Source
 	mapper *diff.Mapper
+	// credential is auth.Get, swapped out by tests.
+	credential func(ctx context.Context, integration string) (string, error)
 
 	mu       sync.Mutex
 	watching map[core.Subject]bool
@@ -44,11 +47,23 @@ func New(s config.Source) (*CLI, error) {
 	if s.Conditional && (len(s.Run) < 3 || s.Run[0] != "gh" || s.Run[1] != "api" || slices.Contains(s.Run, "--paginate")) {
 		return nil, fmt.Errorf("source %s: conditional needs run: [gh, api, <endpoint>, ...] without --paginate", s.Name)
 	}
+	if a := s.Auth; a != nil {
+		switch _, known := auth.Lookup(a.Name); {
+		case a.Name == "":
+			return nil, fmt.Errorf("source %s: auth needs a name, one of %s", s.Name, strings.Join(auth.Names(), ", "))
+		case !known:
+			return nil, fmt.Errorf("source %s: auth %q is not an integration kelpie holds credentials for; one of %s", s.Name, a.Name, strings.Join(auth.Names(), ", "))
+		case !strings.Contains(a.Stdin, "{token}"):
+			return nil, fmt.Errorf("source %s: auth stdin needs {token}, or the credential never reaches the command", s.Name)
+		case s.Stdin != "":
+			return nil, fmt.Errorf("source %s: auth stdin replaces stdin; set only one", s.Name)
+		}
+	}
 	m, err := diff.NewMapper(s.Map, s.Slurp)
 	if err != nil {
 		return nil, fmt.Errorf("source %s: %w", s.Name, err)
 	}
-	return &CLI{source: s, mapper: m, watching: map[core.Subject]bool{}}, nil
+	return &CLI{source: s, mapper: m, credential: auth.Get, watching: map[core.Subject]bool{}}, nil
 }
 
 func (c *CLI) Run(ctx context.Context, observe func([]core.Observation), _ func(core.Event)) error {
@@ -153,6 +168,17 @@ func (c *CLI) poll(ctx context.Context, parent *core.Observation, since string) 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	if c.source.Stdin != "" {
 		cmd.Stdin = strings.NewReader(c.source.Stdin)
+	}
+	if a := c.source.Auth; a != nil {
+		// Read on every poll, so a login or a rotated key applies without
+		// restarting the daemon.
+		token, err := c.credential(ctx, a.Name)
+		if errors.Is(err, auth.ErrNotStored) {
+			return poll{}, fmt.Errorf("no %s credential; run kelpie auth login %s", a.Name, a.Name)
+		} else if err != nil {
+			return poll{}, fmt.Errorf("%s credential: %w", a.Name, err)
+		}
+		cmd.Stdin = strings.NewReader(strings.ReplaceAll(a.Stdin, "{token}", token))
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

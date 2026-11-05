@@ -128,6 +128,7 @@ type Source struct {
 	ForEach *ForEach `yaml:"for_each,omitempty"`
 	Run     []string `yaml:"run,omitempty"`
 	Stdin   string   `yaml:"stdin,omitempty"`
+	Auth    *Auth    `yaml:"auth,omitempty"`
 	Slurp   bool     `yaml:"slurp,omitempty"` // join multiple JSON documents (gh --paginate) into one array
 	// Conditional polls a REST endpoint through gh api with If-Modified-Since
 	// set to the last Last-Modified. A 304 means no change and costs no rate
@@ -143,6 +144,15 @@ type Source struct {
 	// makes up front. A non-empty string refuses the watch with that reason,
 	// like a run that has already completed: it would never change again.
 	Refuse string `yaml:"refuse,omitempty"`
+}
+
+// Auth hands the command a credential from kelpie auth on stdin, in place
+// of stdin: in Stdin, {token} becomes the secret, as in
+// 'header = "Authorization: {token}"' for curl -K -. Never an argument,
+// which ps and kelpie's logs would show.
+type Auth struct {
+	Name  string `yaml:"name"`
+	Stdin string `yaml:"stdin"`
 }
 
 // ForEach runs a source once per subject instead of once for everything, the

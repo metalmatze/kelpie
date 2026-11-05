@@ -1,12 +1,14 @@
 package adapter
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/metalmatze/kelpie/internal/auth"
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/core"
 )
@@ -144,5 +146,58 @@ func TestParseInclude(t *testing.T) {
 	}
 	if _, err := parseInclude([]byte(`[{"id":"1"}]`)); err == nil {
 		t.Fatal("output without a status line parsed")
+	}
+}
+
+func authSource() config.Source {
+	return config.Source{
+		Name: "linear", Adapter: "cli",
+		Auth: &config.Auth{Name: "linear", Stdin: `{"header": "Authorization: {token}"}`},
+		Run:  []string{"cat"},
+		Map:  `{subject: "linear:me", fields: {header: .header}}`,
+	}
+}
+
+func TestAuthStdin(t *testing.T) {
+	c, err := New(authSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.credential = func(_ context.Context, name string) (string, error) {
+		if name != "linear" {
+			t.Fatalf("asked for %q", name)
+		}
+		return "lin_api_secret", nil
+	}
+	_, obs, err := c.Once(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs) != 1 || obs[0].Fields["header"] != "Authorization: lin_api_secret" {
+		t.Fatalf("got %+v", obs)
+	}
+
+	c.credential = func(context.Context, string) (string, error) { return "", auth.ErrNotStored }
+	if _, _, err := c.Once(context.Background(), nil); err == nil || err.Error() != "no linear credential; run kelpie auth login linear" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAuthInvalid(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*config.Source)
+		want string
+	}{
+		{"empty name", func(s *config.Source) { s.Auth.Name = "" }, "auth needs a name"},
+		{"unknown name", func(s *config.Source) { s.Auth.Name = "jira" }, `auth "jira" is not an integration`},
+		{"no token", func(s *config.Source) { s.Auth.Stdin = "header = x" }, "needs {token}"},
+		{"stdin too", func(s *config.Source) { s.Stdin = "x" }, "set only one"},
+	} {
+		s := authSource()
+		tc.edit(&s)
+		if _, err := New(s); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
 	}
 }
