@@ -89,13 +89,17 @@ func Get(ctx context.Context, integration string) (string, error) {
 	if token == "" {
 		return "", ErrNotStored
 	}
+	// The item can be edited outside kelpie, bypassing Set's check.
+	if err := checkToken(token); err != nil {
+		return "", fmt.Errorf("the stored %s credential is malformed: %v; run kelpie auth login %s", integration, err, integration)
+	}
 	return token, nil
 }
 
 // Set stores token for integration, replacing any earlier one.
 func Set(ctx context.Context, integration, token string) error {
 	if err := checkToken(token); err != nil {
-		return err
+		return fmt.Errorf("the credential is malformed: %w; paste only the key itself", err)
 	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -116,15 +120,6 @@ func Set(ctx context.Context, integration, token string) error {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return keychainErr(cmd, err, stderr.String())
-	}
-	// security -i exits 0 even when the command it read failed, so read the
-	// item back to know it was stored.
-	got, err := Get(ctx, integration)
-	if err != nil {
-		return fmt.Errorf("stored, but reading it back failed: %w", err)
-	}
-	if got != token {
-		return errors.New("stored, but reading it back gave a different value")
 	}
 	return nil
 }
@@ -166,7 +161,7 @@ func checkToken(token string) error {
 	}
 	for _, r := range token {
 		if r <= ' ' || r > '~' || r == '"' || r == '\'' || r == '\\' {
-			return errors.New("the credential has a space, quote, backslash or non-ASCII character; paste only the key itself")
+			return errors.New("it has a space, quote, backslash or non-ASCII character")
 		}
 	}
 	return nil
@@ -204,7 +199,7 @@ func unsupported() error {
 // rejected request, which says why; plain -f drops it.
 func curl(ctx context.Context, header, url, body string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "curl", "-sSK", "-", "--fail-with-body", "-H", "Content-Type: application/json", "--data", body, url)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf("header = %q\n", header))
+	cmd.Stdin = strings.NewReader(`header = "` + header + "\"\n")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
