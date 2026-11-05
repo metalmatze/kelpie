@@ -199,7 +199,7 @@ kelpie auth logout slack
 ```
 
 - **Stored in the system keychain:** macOS Keychain (`security`), Secret Service on Linux (`secret-tool`). Never in `config.yaml`, so the config stays shareable, and it works under launchd and systemd, which see no shell environment.
-- **Never in argv or logs.** A source names its credential (`auth: linear`); the `cli` adapter hands the secret to the command on stdin or in its environment, since arguments show up in `ps` and in kelpie's logs.
+- **Never in argv or logs.** A source names its credential and the stdin that carries it (`auth: { name: linear, stdin: 'header = "Authorization: {token}"' }`); the `cli` adapter reads it from the keychain on every poll and writes that stdin to the command, since arguments show up in `ps` and in kelpie's logs. A missing credential fails the poll with `no linear credential; run kelpie auth login linear`.
 - **Read-only.** kelpie only reads, so each credential asks for read scopes only: Linear's Read permission, and Slack's `channels:history`, `groups:history`, `im:history` and `mpim:history` user scopes.
 - **Slack needs an app.** Slack's API and its MCP server both take only a user token (`xoxp-`) from a registered Slack app, and its OAuth needs a client secret that an open-source binary cannot ship. So kelpie ships an app manifest; you create the app from it, install it (some workspaces need an admin to approve), and paste the user token. That is one heavier setup step, once.
 - **Linear could also use OAuth.** A personal API key is the first version; a Linear OAuth app (`kelpie auth login linear` opening a browser) can replace the paste later without changing sources.
