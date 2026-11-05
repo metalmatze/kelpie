@@ -53,9 +53,11 @@ defs: |
   # sources. People are Linear display names, and the key's own user is @me,
   # so ignore_actors drops your own changes. A person acting through an
   # integration (Slack, GitHub) keeps their name; other integrations and
-  # automations are "<name>[bot]". A change's actor is the newest history
-  # entry of its kind; without one in the page it stays unknown, never a
-  # guess, so an event is not dropped as yours by mistake.
+  # automations are "<name>[bot]". A status or assignee change's actor is
+  # the newest history entry that led to the current state or assignee. The
+  # transitions take it only if that entry is newer than the previous
+  # snapshot's updatedAt, so a change the page does not hold is unknown,
+  # never an older entry by you that would drop it as yours.
   def linear_who:
     if .user then (if .user.isMe then "@me" else .user.displayName end)
     elif .botActor.userDisplayName then .botActor.userDisplayName
@@ -65,7 +67,7 @@ defs: |
   def linear_issue: select(. != null) | . as $i
     | ([.comments.nodes[] | {at: .createdAt, by: linear_who}] | sort_by(.at)) as $comments
     | ([.history.nodes[] | select(.toStateId == $i.state.id)] | max_by(.createdAt)) as $moved
-    | ([.history.nodes[] | select(.fromAssigneeId != .toAssigneeId)] | max_by(.createdAt)) as $assigned
+    | ([.history.nodes[] | select(.toAssigneeId == $i.assignee.id and .fromAssigneeId != .toAssigneeId)] | max_by(.createdAt)) as $assigned
     | [.inverseRelations.nodes[] | select(.type == "blocks") | .issue
         | {id: .identifier, state: .state.name, done: (.state.type | IN("completed", "canceled"))}] as $blockers
     | {
@@ -73,14 +75,17 @@ defs: |
       url: .url,
       fields: {
         id: .identifier,
+        updated_at: .updatedAt,
         status: .state.name,
         state_type: .state.type,
         # Empty once completed or canceled, which status.changed ignores:
         # state.completed and state.canceled report that.
         open_status: (if .state.type | IN("completed", "canceled") then "" else .state.name end),
         status_actor: ($moved | if . then linear_who else "" end),
+        status_at: $moved.createdAt,
         assignee: (.assignee | if . == null then "" elif .isMe then "@me" else .displayName end),
         assigner: ($assigned | if . then linear_who else "" end),
+        assigned_at: $assigned.createdAt,
         comment_at: $comments[-1].at,
         comment_times: [$comments[].at],
         last_commenter: ($comments[-1].by // ""),
@@ -663,7 +668,7 @@ sources:
         "query": "query($closed: [String!], $recent: DateTimeOrDuration, $commentsSince: DateTimeOrDuration) {
         viewer { assignedIssues(first: 50, orderBy: updatedAt,
         filter: { or: [ { state: { type: { nin: $closed } } }, { updatedAt: { gt: $recent } } ] }) { nodes {
-        identifier url state { id name type } assignee { displayName isMe }
+        identifier url updatedAt state { id name type } assignee { id displayName isMe }
         comments(first: 10, filter: { createdAt: { gt: $commentsSince } }) { nodes { createdAt
         user { displayName isMe } botActor { name type userDisplayName } externalUser { name } } }
         history(first: 10) { nodes { createdAt toStateId fromAssigneeId toAssigneeId
@@ -677,15 +682,15 @@ sources:
         changed: true
         ignore: [""]
         kind: status.changed
-        actor: .status_actor
-        summary: '"\($old.status) → \(.status)\(if .status_actor != "" then " by \(.status_actor)" else "" end)"'
+        actor: 'if .status_at > ($old.updated_at // "") then .status_actor else "" end'
+        summary: '"\($old.status) → \(.status)" + (if .status_at > ($old.updated_at // "") and .status_actor != "" then " by \(.status_actor)" else "" end)'
       - field: assignee
         changed: true
         kind: assignee.changed
-        actor: .assigner
+        actor: 'if .assigned_at > ($old.updated_at // "") then .assigner else "" end'
         summary: |
           (if .assignee == "@me" then "assigned to you" elif .assignee == "" then "unassigned" else "assigned to \(.assignee)" end)
-          + (if .assigner != "" and .assigner != "@me" then " by \(.assigner)" else "" end)
+          + (if .assigned_at > ($old.updated_at // "") and .assigner != "" and .assigner != "@me" then " by \(.assigner)" else "" end)
       - field: comment_at
         increased: true
         kind: comment.added
@@ -708,7 +713,7 @@ sources:
         kind: state.completed
         urgent: true
         terminal: true
-        summary: &linear_closed '"\(.status)\(if .status_actor != "" then " by \(.status_actor)" else "" end); kelpie stops watching"'
+        summary: &linear_closed '"\(.status)" + (if .status_at > ($old.updated_at // "") and .status_actor != "" then " by \(.status_actor)" else "" end) + "; kelpie stops watching"'
       - field: state_type
         to: canceled
         kind: state.canceled
@@ -740,7 +745,7 @@ sources:
       - >-
         {"variables": {"id": "{id}", "commentsSince": "-P1D"},
         "query": "query($id: String!, $commentsSince: DateTimeOrDuration) { issue(id: $id) {
-        identifier url state { id name type } assignee { displayName isMe }
+        identifier url updatedAt state { id name type } assignee { id displayName isMe }
         comments(first: 50, filter: { createdAt: { gt: $commentsSince } }) { nodes { createdAt
         user { displayName isMe } botActor { name type userDisplayName } externalUser { name } } }
         history(first: 25) { nodes { createdAt toStateId fromAssigneeId toAssigneeId
