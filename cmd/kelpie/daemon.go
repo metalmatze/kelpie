@@ -250,6 +250,12 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 	return func(obs []core.Observation) {
 		slog.Debug("observed", "source", r.s.Name, "subjects", len(obs))
 		for _, ev := range r.d.Observe(obs) {
+			// An issue both assigned to you and watched would otherwise reach
+			// the agent twice, once from the list and once from its watch.
+			if r.s.ForEach == nil && d.polledOnItsOwn(ev.Subject) {
+				slog.Debug("left to the subject's own watch", "source", r.s.Name, "subject", ev.Subject, "kind", ev.Kind)
+				continue
+			}
 			d.router.Route(ev)
 		}
 		if r.badge != nil {
@@ -278,6 +284,25 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 			}
 		}
 	}
+}
+
+// polledOnItsOwn reports whether a for_each.subjects source runs a loop for
+// subject. That loop is the subject's source of events: it polls just this
+// subject, usually more often than a list does, and its terminal event ends
+// the watch.
+func (d *daemon) polledOnItsOwn(subject core.Subject) bool {
+	if len(d.binder.Bindings(subject)) == 0 {
+		return false
+	}
+	for _, r := range d.runners {
+		if r.pattern == nil {
+			continue
+		}
+		if _, ok := r.pattern.Match(subject); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // startWatches starts every for_each.subjects source that handles subject,
