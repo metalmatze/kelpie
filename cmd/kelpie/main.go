@@ -140,7 +140,7 @@ func (ConfigShowCmd) Run(g *Globals) error {
 type SourceTestCmd struct {
 	Name    string `arg:"" help:"Source name."`
 	Raw     bool   `help:"Print the command's raw output instead of observations (for fixtures)."`
-	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, or a PR or issue URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
+	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, or a PR, issue or Linear issue URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
 }
 
 func (c *SourceTestCmd) Run(ctx context.Context, g *Globals) error {
@@ -258,6 +258,24 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 
 type WatchCmd struct {
 	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request or an issue, or the notifications of a repo or org."`
+	Linear WatchLinearCmd `cmd:"" name:"linear" help:"Watch a Linear issue until it is completed or canceled."`
+}
+
+type WatchLinearCmd struct {
+	Target    string `arg:"" help:"Issue ID like ENG-123, or the issue's URL."`
+	Workspace string `help:"Pane or terminal to prompt. Default: the one this runs in."`
+}
+
+func (c *WatchLinearCmd) Run(ctx context.Context) error {
+	workspace, err := callerWorkspace(c.Workspace)
+	if err != nil {
+		return err
+	}
+	subject, err := core.LinearSubject(c.Target)
+	if err != nil {
+		return err
+	}
+	return watch(ctx, subject, workspace)
 }
 
 type WatchGitHubCmd struct {
@@ -322,6 +340,20 @@ func githubTarget(ctx context.Context, s string) (core.Subject, error) {
 type UnwatchCmd struct {
 	Subject UnwatchSubjectCmd `cmd:"" default:"withargs" help:"Stop watching a subject as kelpie status lists it."`
 	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request or an issue, or the notifications of a repo or org."`
+	Linear  UnwatchLinearCmd  `cmd:"" name:"linear" help:"Stop watching a Linear issue."`
+}
+
+type UnwatchLinearCmd struct {
+	Target    string `arg:"" help:"Issue ID like ENG-123, or the issue's URL."`
+	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
+}
+
+func (c *UnwatchLinearCmd) Run(ctx context.Context) error {
+	subject, err := core.LinearSubject(c.Target)
+	if err != nil {
+		return err
+	}
+	return unwatch(ctx, subject, c.Workspace)
 }
 
 type UnwatchSubjectCmd struct {
@@ -370,7 +402,7 @@ func (StatusCmd) Run(ctx context.Context) error {
 		return err
 	}
 	if len(st.Watches) == 0 {
-		fmt.Println("watching nothing; run kelpie watch github <pr or issue url, repo or org> inside an agent's pane")
+		fmt.Println("watching nothing; run kelpie watch github <pr or issue url, repo or org> or kelpie watch linear <issue> inside an agent's pane")
 	}
 	for _, w := range st.Watches {
 		fmt.Printf("%-50s pane %-8s since %s\n", w.Subject, w.Workspace, w.Since.Format("Jan 2 15:04"))
@@ -389,7 +421,7 @@ type RemindCmd struct {
 	In        time.Duration `xor:"when" help:"Due after this long, like 1h or 90m."`
 	At        string        `xor:"when" help:"Due at this local time: 10:00 (the next one), 2026-10-31T10:00, or RFC 3339."`
 	Cron      string        `xor:"when" help:"Due on this cron schedule, like '0 9 * * 1-5' or @daily; local time unless prefixed with CRON_TZ=."`
-	Subject   string        `help:"Pull request or issue the reminder is about (its URL, or the subject as kelpie status lists it). Its pending updates and fetch command come with the reminder."`
+	Subject   string        `help:"Pull request or issue, GitHub or Linear, the reminder is about (its URL, or the subject as kelpie status lists it). Its pending updates and fetch command come with the reminder."`
 	Workspace string        `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
