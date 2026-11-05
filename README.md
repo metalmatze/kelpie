@@ -1,6 +1,6 @@
 # kelpie
 
-kelpie types GitHub pull request updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
+kelpie types GitHub pull request and issue updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
 
 ## Use cases
 
@@ -14,7 +14,13 @@ Follow a PR for the agent that owns it. A coding agent's turn ends after it push
 kelpie watch github https://github.com/org/api/pull/421
 ```
 
-Give an agent the GitHub notifications of a repo or an org. The agent gets a count by reason and the thread refs, then fetches the details to triage. These are your own unread notifications, so what arrives depends on what you watch and subscribe to on GitHub. An org watch reads your newest notifications (page 1) and keeps the org's threads. kelpie cannot watch a single issue. Issues reach the agent through a watch on the notifications of their repo.
+Follow an issue for the agent that works on it. kelpie tells the agent when someone else comments, changes the labels, assignees, milestone, title, or description, or reopens the issue, and when a PR that references or closes the issue is opened or merged. The watch ends when the issue closes, as completed or as not planned, even if you closed it yourself.
+
+```sh
+kelpie watch github https://github.com/org/api/issues/17
+```
+
+Give an agent the GitHub notifications of a repo or an org. The agent gets a count by reason and the thread refs, then fetches the details to triage. These are your own unread notifications, so what arrives depends on what you watch and subscribe to on GitHub. An org watch reads your newest notifications (page 1) and keeps the org's threads.
 
 ```sh
 kelpie watch github org/api   # one repository
@@ -123,7 +129,7 @@ Before you run `kelpie service install`, stop any daemon from a kelpie build wit
    kelpie daemon
    ```
 
-2. Watch a pull request. A URL or `owner/repo#N` both work.
+2. Watch a pull request or an issue. A URL or `owner/repo#N` both work. GitHub numbers issues and PRs in one sequence, so for `owner/repo#N` kelpie asks GitHub which one it is.
 
    ```console
    $ kelpie watch github https://github.com/prometheus-community/pyrra/pull/2013
@@ -172,16 +178,17 @@ To stop a watch early, run `kelpie unwatch github <target>` with the same target
 
 ## How it works
 
-`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, and a notification inbox every 60 seconds. kelpie compares each result with the previous one and turns the differences into events, for example:
+`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, and an issue or a notification inbox every 60 seconds. kelpie compares each result with the previous one and turns the differences into events, for example:
 
 - `checks.failed`: a required check failed. `checks.passed`: all required checks passed.
 - `review.submitted` and `comment.added`: someone reviewed or commented.
 - `commits.pushed`: someone else pushed to the branch.
 - `merge.conflict`: the PR conflicts with its base branch.
-- `state.merged` and `state.closed`: the PR is done, and the watch ends.
+- `state.merged` and `state.closed`: the PR or issue is done, and the watch ends.
+- `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
 - `notifications.new`: threads in a watched inbox are new or changed.
 
-kelpie ignores your own actions, and the actions of bots that are not in `rules.allow_bots`. By default, events wait 30 seconds so that a burst arrives as one update. Failed checks and merges wait 5 seconds.
+kelpie ignores your own actions, and the actions of bots that are not in `rules.allow_bots`. By default, events wait 30 seconds so that a burst arrives as one update. Failed checks, merges, and closed issues wait 5 seconds.
 
 In herdr, kelpie delivers each update with `herdr agent prompt`. If the agent is blocked, for example at a question, the update waits until the agent can take input. If it waits longer than 5 minutes, herdr shows you a notification. A watch also ends when its pane closes. [Orca](#orca) lists what differs in Orca.
 
@@ -198,7 +205,7 @@ herdr plugin link "$PWD/herdr-plugin"
 herdr runs the startup hook at the next herdr server start, not when you link the plugin. The plugin needs `kelpie`, `gh`, and `jq` on herdr's `PATH`. Set `KELPIE_BIN` to use a `kelpie` binary from somewhere else. The plugin adds:
 
 - A startup hook. If no daemon answers, it runs `kelpie daemon` in the tab "daemon" of the workspace "kelpie". It creates the workspace and the tab if they do not exist.
-- A link handler. Ctrl-click a pull request link in a pane to watch that PR for the pane's agent. Ctrl is the modifier on macOS too. herdr handles the click only while `ui.mouse_capture` is on, which is the default.
+- A link handler. Ctrl-click a pull request or issue link in a pane to watch it for the pane's agent. Ctrl is the modifier on macOS too. herdr handles the click only while `ui.mouse_capture` is on, which is the default.
 - The action `kelpie.watch-pr`, which watches the PR of the focused pane's branch.
 - The action `kelpie.status`, which opens `kelpie status` in a popup.
 
@@ -227,6 +234,7 @@ kelpie reports a `kelpie` token on every pane it watches for. The token has one 
 | `#2013 ✗` | A required check failed. |
 | `draft`, `approved`, `changes requested` | The PR is a draft, or its review decision. |
 | `conflict` | The PR conflicts with its base branch. |
+| `issue #17 → #20` | A watched issue, and the open or merged PRs that will close it. `closed` follows the number of a closed issue. |
 | `owner/repo 🔔22`, `org 🔔22` | Unread notification threads, up to the 50 most recent. |
 | `⏰3` | Pending reminders for the pane. |
 
@@ -266,7 +274,7 @@ Orca has no notification with a title and body. When updates wait longer than `d
 
 The skill in [`skills/kelpie`](skills/kelpie/SKILL.md) is written for Claude Code. It teaches the agent to:
 
-- Offer a watch right after `gh pr create`, or when you name a PR to work on.
+- Offer a watch right after `gh pr create`, or when you name a PR or an issue to work on.
 - Watch a repo's or an org's notifications when you ask.
 - Turn "tomorrow at 10" or "every weekday at 9" into a `kelpie remind` command.
 - Act on each kind of update: fix failing checks, address reviews, pull after other people's pushes, and resolve conflicts. It asks you before a force push and leaves merging to you.
@@ -292,7 +300,7 @@ Your file replaces the default file. kelpie does not merge the two, so a file wi
 
 Settings you may want to change are `delivery.debounce`, `delivery.notify.stuck`, and `rules.allow_bots`. The comments in the default file describe the rest.
 
-The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-inbox`, and `github-inbox-org`. To run one source once and print what it observes, use `kelpie source test`. `github-pr` and the inbox sources need `--subject`:
+The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-inbox`, and `github-inbox-org`. A config file written before `github-issue` existed lacks it, so copy it from the default file to watch issues. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, and the inbox sources need `--subject`:
 
 ```sh
 kelpie source test github-pr --subject https://github.com/prometheus-community/pyrra/pull/2013
@@ -300,6 +308,6 @@ kelpie source test github-pr --subject https://github.com/prometheus-community/p
 
 ## Status
 
-kelpie works with herdr and Orca. It watches PRs and notifications, sends reminders, and can run as a service.
+kelpie works with herdr and Orca. It watches PRs, issues, and notifications, sends reminders, and can run as a service.
 
 [DESIGN.md](DESIGN.md) describes the internals and the longer plan. Parts of it, such as Slack and Linear sources, are not built yet. DESIGN.md also lists commands that do not exist yet, such as `kelpie doctor`, `kelpie mcp login`, and `kelpie watch slack`.

@@ -9,7 +9,7 @@ kelpie is one Go daemon that turns SDLC events (GitHub, Slack threads, Linear, d
 **Goals**
 
 - Wake the right agent when its PR goes green or red, gets a review, is merged, deploys, breaks something, or gets a reply in a watched Slack thread.
-- Watch on request. When a PR comes up in a conversation, the agent asks whether to watch it (the `kelpie` skill) and runs `kelpie watch github <pr-url>` in its pane. The same goes for a repo's or org's GitHub notifications (`kelpie watch github <owner/repo or org>`). kelpie polls only watched subjects, never everything you authored.
+- Watch on request. When a PR or an issue comes up in a conversation, the agent asks whether to watch it (the `kelpie` skill) and runs `kelpie watch github <url>` in its pane. The same goes for a repo's or org's GitHub notifications (`kelpie watch github <owner/repo or org>`). kelpie polls only watched subjects, never everything you authored.
 - Follow up later on request. "Check the PR again tomorrow at 10" or "try again in an hour" becomes `kelpie remind`, and kelpie prompts the same agent when it is due, once or on a cron schedule.
 - Report everything that happens on a watched PR: checks, reviews, comments, pushes by others, title, description, base, labels, review requests, draft state, conflicts, merge.
 - Bind other work to workspaces automatically where a rule is unambiguous (Linear ID, k8s namespace); confirm only fuzzy matches.
@@ -43,7 +43,7 @@ Core types:
 
 ```go
 // Subject is a stable URI for a watched thing.
-// github:org/repo#421, linear:ENG-123, slack:C0123ABCD/1761811234.567890,
+// github:org/repo#421, github-issue:org/repo#17, linear:ENG-123, slack:C0123ABCD/1761811234.567890,
 // k8s:kind-dev/dev-eng-123/deploy/api
 type Subject string
 
@@ -173,6 +173,7 @@ Every source is a command an agent could run itself: the vendor's CLI, or `curl`
 | Source | Adapter | Command | Auth | Call | Key events |
 | --- | --- | --- | --- | --- | --- |
 | GitHub PR | `cli`, per watched PR | `gh` | `gh`'s own | `gh api graphql` for one PR every 30 s, and for its checks every 15 s while they run | checks, reviews, comments, pushes, title, description, base, labels, review requests, draft, conflicts, merged/closed |
+| GitHub issue | `cli`, per watched issue | `gh` | `gh`'s own | `gh api graphql` for one issue every 60 s | comments, labels, assignees, milestone, title, description, PRs referencing or closing it opened/merged, reopened, closed (as completed, not planned or duplicate) |
 | GitHub notifications | `cli`, per watched repo or org | `gh` | `gh`'s own | `gh api repos/o/r/notifications` (an org: `gh api notifications`, filtered), page 1, conditional, every 60 s | `notifications.new` |
 | Slack threads | `cli`, per watched thread | `curl` | `kelpie auth` (`slack`) | `conversations.replies?channel=…&ts=…` every 60 s | `slack.replied` |
 | Linear | `cli` | `curl` | `kelpie auth` (`linear`) | GraphQL at `api.linear.app/graphql` for issues assigned to you or bound to a workspace, every 120 s | status, assignee, comments, blocker done |
@@ -209,6 +210,17 @@ kelpie auth logout slack
 **Checks follow `gh pr checks --watch`.** gh polls one query per PR every 10 s and has no push channel either. kelpie runs the same GraphQL query and buckets each check the same way (pass, fail, pending, skip, cancel), keeping only the newest of re-runs. It does not wrap `gh pr checks --json`, which lacks `isRequired`. The checks loop starts when the PR loop sees any check still running; the rollup state alone is not enough, since one failed check makes it FAILURE while the rest still run. It reports the first required failure early, as `--fail-fast` would, and always reports the end of CI as `checks.passed` or `checks.failed`.
 
 **Only required checks decide pass or fail.** A check like DCO ends as ACTION_REQUIRED and never turns green without a person, so with every other check green the PR's rollup stays FAILURE. kelpie reports such optional failures alongside the result (`required checks passed (3); optional failing: DCO (action required)`) for the agent to pass on. A repo without required checks treats all checks as required.
+
+### Issues are watched like PRs, under their own subject
+
+`kelpie watch github https://github.com/org/api/issues/17` watches one issue: `github-issue:org/api#17`, polled by the `github-issue` source with one `gh api graphql` call every 60 s, until the issue closes or the pane goes away.
+
+- **A prefix of its own.** GitHub numbers issues and PRs in one sequence, so `org/api#17` alone does not say which it is, and `github-pr` runs for every `github:` subject. Sharing `github:` would run the PR query against an issue; `github-issue:` keeps the sources apart, and every PR watch saved as `github:` keeps working unchanged.
+- **The short form asks GitHub.** A `/pull/` or `/issues/` URL says what it is. For `owner/repo#N`, `kelpie watch github` and `unwatch github` ask `gh api repos/{owner}/{repo}/issues/{N}`, which answers for PRs too, with a `pull_request` key. Without a lookup (`kelpie remind --subject`, subjects as `kelpie status` lists them) the short form stays a PR, as before. An `/issues/N` URL that is really a PR fails at the watch command with GitHub's "Could not resolve to an Issue".
+- **Events.** `comment.added`, `labels.changed`, `assignees.changed`, `milestone.changed`, `title.changed`, `description.changed`, `pr.linked` (a PR mentions the issue or will close it, through a closing keyword or a link set by hand), `pr.merged`, `state.reopened`, and `state.closed` with GitHub's `stateReason` (completed, not planned, duplicate) and the closer, a PR or commit when one closed it. Closed is terminal, like a merged PR.
+- **Actors from the timeline.** An issue has no "last labeler" field, so the query takes the newest timeline item of each kind (`LABELED_EVENT`/`UNLABELED_EVENT`, `ASSIGNED_EVENT`, `RENAMED_TITLE_EVENT`, `MILESTONED_EVENT`, `CLOSED_EVENT`/`REOPENED_EVENT`) and the issue's `editor` for the description. `ignore_actors` then drops your own changes and bots'. `pr.linked` takes the PR's author, so a PR the agent opened is not news to it; several new PRs by different authors have no single actor and always go through. `state.closed` and `pr.merged` have no actor: closing ends the watch even when you closed the issue.
+- **No text of others in the prompt.** Title and description are stored only to detect edits. Label names and the milestone title are maintainers' short labels and enter the summary, as PR labels do.
+- **Not covered:** reactions, comment edits, a PR linked and unlinked within one poll, and project board fields.
 
 ### Slack threads are watched by URL
 
@@ -485,7 +497,7 @@ kelpie doctor                    # CLIs on PATH, CLI and kelpie auth, hosts, las
 | Command | What it does |
 | --- | --- |
 | `kelpie status` | sources, bindings per workspace, queued deliveries |
-| `kelpie watch github <pr-url, owner/repo#N, owner/repo or org>` | bind a PR, or a repo's or org's GitHub notifications, to this workspace; without a target, the notifications of the current directory's repo |
+| `kelpie watch github <pr or issue url, owner/repo#N, owner/repo or org>` | bind a PR or an issue, or a repo's or org's GitHub notifications, to this workspace; without a target, the notifications of the current directory's repo |
 | `kelpie watch <provider> <target>` | one subcommand per provider, added with its source: `slack <thread-url>`, `linear <id>`, `k8s`, `prom` (planned) |
 | `kelpie unwatch <subject>`, `kelpie unwatch <provider> <target>` | remove this workspace's binding, by the subject `kelpie status` lists or as it was watched; other workspaces keep theirs |
 | `kelpie auth login\|status\|logout <integration>` | store, check or remove the credential for a vendor without a CLI (Linear, Slack) in the system keychain |
@@ -504,9 +516,9 @@ A command rather than documented steps because neither supervisor sees the login
 
 **Coexistence.** The flock is the lock: a daemon that finds it held exits 0, so whichever of unit and plugin starts first wins and the other steps aside. Units restart only on failure, at most every 30 s: a crash or `kill -9` restarts, while SIGTERM, or another daemon holding the lock, leaves it stopped until the next login. If herdr is down at login the daemon keeps polling its hosts until herdr answers.
 
-**herdr plugin.** Besides the daemon it adds three ways in that skip the agent: ctrl-click on a PR link watches it for the pane it was clicked in, `kelpie.watch-pr` watches the PR of the focused pane's branch (`gh pr view` in its directory), and `kelpie.status` opens `kelpie status` in a popup. Actions have no terminal, so they answer with a herdr notification.
+**herdr plugin.** Besides the daemon it adds three ways in that skip the agent: ctrl-click on a PR or issue link watches it for the pane it was clicked in, `kelpie.watch-pr` watches the PR of the focused pane's branch (`gh pr view` in its directory), and `kelpie.status` opens `kelpie status` in a popup. Actions have no terminal, so they answer with a herdr notification.
 
-**Agent side.** The `kelpie` skill (`skills/kelpie/SKILL.md`, linked into `~/.claude/skills`) carries both halves: offering `kelpie watch` when a PR comes up, and what to do with each `[kelpie]` event kind. A skill rather than an `AGENTS.md` block, so it loads only when a PR or an update is in play.
+**Agent side.** The `kelpie` skill (`skills/kelpie/SKILL.md`, linked into `~/.claude/skills`) carries both halves: offering `kelpie watch` when a PR or an issue comes up, and what to do with each `[kelpie]` event kind. A skill rather than an `AGENTS.md` block, so it loads only when a PR or an update is in play.
 
 **Writing a source.** Add an entry under `sources:`: the command, a jq `map`, and `transitions`, plus `auth:` when it calls an API with a kelpie-held credential. No Go code and no rebuild. Go code is only for a new adapter kind, which should be rare.
 
