@@ -163,7 +163,11 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		}
 		b.state.DeleteBinding(ev.Subject, bd.Workspace)
 	}
-	if len(targets) > 0 || !b.branch && !(b.LinearBranch && linearID(ev.Subject) != "") {
+	enabled := b.branch
+	if linearID(ev.Subject) != "" {
+		enabled = b.LinearBranch
+	}
+	if len(targets) > 0 || !enabled {
 		return targets
 	}
 

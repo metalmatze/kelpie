@@ -145,6 +145,12 @@ func TestLinearBranchBinding(t *testing.T) {
 	if got := b.Resolve(core.Event{Subject: "github:acme/api#1", Bind: map[string]string{"repo": "acme/api", "branch": "main"}}); got != nil {
 		t.Fatalf("PR bound by LinearBranch: %+v", got)
 	}
+	// binders.branch alone does not turn the Linear binder on.
+	b2 := New(state.NewMemory(), true)
+	b2.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"}})
+	if got := b2.Resolve(ev); got != nil {
+		t.Fatalf("bound by binders.branch with LinearBranch off: %+v", got)
+	}
 	for branch, want := range map[string]bool{
 		"eng-123": true, "ENG-123-x": true, "u/eng-123": true, "feature_eng-123_x": true,
 		"eng-1234": false, "xeng-123": false, "eng-12": false, "": false,
