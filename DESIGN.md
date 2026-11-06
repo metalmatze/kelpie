@@ -243,7 +243,7 @@ kelpie auth logout slack
 - **Cost.** About 30 requests an hour for the assigned list plus 60 per watched issue, against 2,500 an hour for an API key, a quota every Linear client of the same user shares. Linear rejects any query above 10,000 complexity points and charges the page sizes asked for, not the issues returned (`first: 5` costs 414, `first: 50` 4,131, with 12 issues assigned). Pages of 10 comments, 10 history entries and 10 relations keep 50 issues at 4,131; a watched issue's larger pages cost 193. That is about 124,000 points an hour for the list and 12,000 per watched issue, of the 3,000,000 a key gets.
 - **Comments of the last day.** Linear connections have no `totalCount`, and the page order is not documented, so the query takes comments created within a day and calls those newer than the newest seen new. Past one page of them in a day, the page decides which are seen.
 - **One watch, one report.** An assigned issue that is also watched is observed by both sources. The daemon drops a list source's events for a subject while a `for_each.subjects` loop runs for it, so the watch alone reports it. A binding alone does not count: a branch binding starts no loop, and the list is then all that reports.
-- **Assigned issues bind by branch.** Events of the `linear` source reach a workspace through `kelpie watch linear`, or through `binders.linear` (on by default): `linear:ENG-123` binds to the one workspace whose branch names the issue as a whole word, in any case, as Linear's branch names do (`user/eng-123-fix-auth`; not `eng-1234`). No repo check, since a Linear issue belongs to no repo. The binding is made on the issue's first event after the branch is checked out, follows the branch like a PR's, lives in memory only, and ends with `state.completed` or `state.canceled`. Several workspaces on such a branch, such as an agent's pane and a shell pane in one worktree, get nothing and a warning until the confirmation queue exists. An issue on your branch but not assigned to you is not polled, so it needs `kelpie watch linear`.
+- **Assigned issues bind by branch.** Events of the `linear` source reach a workspace through `kelpie watch linear`, or through `binders.linear` (on by default): `linear:ENG-123` binds to the one workspace whose branch names the issue as a whole word, in any case, as Linear's branch names do (`user/eng-123-fix-auth`; not `eng-1234`). No repo check, since a Linear issue belongs to no repo. The binding is made on the issue's first event after the branch is checked out, follows the branch like a PR's, lives in memory only, and ends with `state.completed` or `state.canceled`. The list keeps a closed issue for a day, so a comment in that day binds the pane again and reaches it with the binding note, after "kelpie stops watching". That is on purpose: someone is still talking about the work, and skipping it would need the issue's state on the event. Several workspaces on such a branch, such as an agent's pane and a shell pane in one worktree, get nothing and a warning until the confirmation queue exists. An issue on your branch but not assigned to you is not polled, so it needs `kelpie watch linear`.
 - **No key, no noise.** Both sources are in the default, and without a stored key every poll fails with `no linear credential; run kelpie auth login linear`. The adapter logs a repeating failure once, and again only when it changes or clears, so people who do not use Linear see one warning per daemon start. `{name: linear, enabled: false}` removes it.
 - **Not covered:** an issue assigned to you or away from you, in the assigned list. It drops out of the list when assigned away. When it is assigned to you, it is silent only the first time the daemon sees it. Snapshots are kept per source and subject for the daemon's lifetime, so an issue that left the list and comes back is diffed against the snapshot from when it left, and the agent gets one update with every change since then. Also not covered: title, description, label, priority and estimate changes, and blockers added or removed.
 
@@ -473,7 +473,9 @@ sources:
 
   # Linear: GraphQL with a personal API key (no "Bearer" prefix for API keys).
   # The full query, the linear_issue def and the transitions ship in
-  # internal/config/default.yaml; linear-issue polls one watched issue.
+  # internal/config/default.yaml; linear-issue polls one watched issue. A
+  # source of this name in your config replaces the built-in one whole, so
+  # copy its transitions from there rather than writing your own.
   - name: linear
     adapter: cli
     auth: linear      # curl -K - reads: header = "Authorization: <key>"
@@ -482,10 +484,6 @@ sources:
           "https://api.linear.app/graphql"]
     every: 120s
     map: .data.viewer.assignedIssues.nodes[] | linear_issue
-    transitions:
-      - { field: open_status, changed: true, ignore: [""], kind: status.changed, actor: .status_actor }
-      - { field: comment_at, increased: true, kind: comment.added, actor: .last_commenter }
-      - { field: state_type, to: completed, kind: state.completed, urgent: true, terminal: true }
 
   # Kubernetes: a streaming kubectl, local clusters only
   - name: k8s-local
