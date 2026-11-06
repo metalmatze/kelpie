@@ -65,6 +65,7 @@ defs: |
     elif .externalUser then .externalUser.name
     elif .botActor then "\(.botActor.name // .botActor.type)[bot]"
     else "" end;
+  def linear_since($old; $at; $who): if $at > ($old.updated_at // "") then $who else "" end;
   def linear_issue: select(. != null) | . as $i
     | ([.comments.nodes[] | {at: .createdAt, by: linear_who}] | sort_by(.at)) as $comments
     | ([.history.nodes[] | select(.toStateId == $i.state.id)] | max_by(.createdAt)) as $moved
@@ -685,15 +686,15 @@ sources:
         changed: true
         ignore: [""]
         kind: status.changed
-        actor: 'if .status_at > ($old.updated_at // "") then .status_actor else "" end'
-        summary: '"\($old.status) → \(.status)" + (if .status_at > ($old.updated_at // "") and .status_actor != "" then " by \(.status_actor)" else "" end)'
+        actor: 'linear_since($old; .status_at; .status_actor)'
+        summary: '"\($old.status) → \(.status)" + (linear_since($old; .status_at; .status_actor) | if . != "" then " by \(.)" else "" end)'
       - field: assignee
         changed: true
         kind: assignee.changed
-        actor: 'if .assigned_at > ($old.updated_at // "") then .assigner else "" end'
+        actor: 'linear_since($old; .assigned_at; .assigner)'
         summary: |
           (if .assignee == "@me" then "assigned to you" elif .assignee == "" then "unassigned" else "assigned to \(.assignee)" end)
-          + (if .assigned_at > ($old.updated_at // "") and .assigner != "" and .assigner != "@me" then " by \(.assigner)" else "" end)
+          + (linear_since($old; .assigned_at; .assigner) | if . != "" and . != "@me" then " by \(.)" else "" end)
       - field: comment_at
         increased: true
         kind: comment.added
@@ -720,7 +721,7 @@ sources:
         kind: state.completed
         urgent: true
         terminal: true
-        summary: &linear_closed '"\(.status)" + (if .status_at > ($old.updated_at // "") and .status_actor != "" then " by \(.status_actor)" else "" end) + "; kelpie stops watching"'
+        summary: &linear_closed '"\(.status)" + (linear_since($old; .status_at; .status_actor) | if . != "" then " by \(.)" else "" end) + "; kelpie stops watching"'
       - field: state_type
         to: canceled
         kind: state.canceled
