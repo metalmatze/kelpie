@@ -16,10 +16,8 @@ import (
 
 // Binder resolves an event's subject to the workspace that owns the work.
 type Binder struct {
-	state  state.State
-	branch bool
-	// LinearBranch binds linear:ENG-123 to the one workspace whose branch
-	// names the issue, as Linear's own branch names do (user/eng-123-fix-auth).
+	state        state.State
+	branch       bool
 	LinearBranch bool
 	now          func() time.Time
 
@@ -225,10 +223,9 @@ func matchesBranch(ws host.Workspace, ev core.Event) bool {
 	return false
 }
 
-// linearID is ENG-123 of linear:ENG-123, else empty.
 func linearID(s core.Subject) string {
-	id, _ := strings.CutPrefix(string(s), "linear:")
-	if id == string(s) {
+	id, ok := strings.CutPrefix(string(s), "linear:")
+	if !ok {
 		return ""
 	}
 	return id

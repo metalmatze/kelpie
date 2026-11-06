@@ -98,7 +98,8 @@ func (c *CLI) Watch(ctx context.Context, parent core.Observation, observe func([
 	}()
 }
 
-// Watching reports whether a for_each loop runs for subject.
+// Watching asks the runner, not the bindings: a branch binding starts no
+// for_each loop, so a bound subject may still be polled only by a list.
 func (c *CLI) Watching(subject core.Subject) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
