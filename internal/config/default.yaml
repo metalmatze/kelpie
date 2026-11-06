@@ -51,9 +51,10 @@ defs: |
 
   # One Linear issue as an observation, for the linear and linear-issue
   # sources. People are Linear display names, and the key's own user is @me,
-  # so ignore_actors drops your own changes. A person acting through an
-  # integration (Slack, GitHub) keeps their name; other integrations and
-  # automations are "<name>[bot]". A status or assignee change's actor is
+  # so ignore_actors drops your own changes. Someone without a Linear
+  # account (a Slack-synced thread) keeps the name Linear records for them,
+  # since Slack's botActor carries no name of its own; other integrations
+  # and automations are "<name>[bot]". A status or assignee change's actor is
   # the newest history entry that led to the current state or assignee. The
   # transitions take it only if that entry is newer than the previous
   # snapshot's updatedAt, so a change the page does not hold is unknown,
@@ -61,8 +62,8 @@ defs: |
   def linear_who:
     if .user then (if .user.isMe then "@me" else .user.displayName end)
     elif .botActor.userDisplayName then .botActor.userDisplayName
-    elif .botActor then "\(.botActor.name // .botActor.type)[bot]"
     elif .externalUser then .externalUser.name
+    elif .botActor then "\(.botActor.name // .botActor.type)[bot]"
     else "" end;
   def linear_issue: select(. != null) | . as $i
     | ([.comments.nodes[] | {at: .createdAt, by: linear_who}] | sort_by(.at)) as $comments
