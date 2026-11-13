@@ -69,7 +69,7 @@ kelpie remind --cron "0 10 * * 5" "prepare the release notes and tell me when th
 
 ## What the agent sees
 
-kelpie is a small daemon that runs on your machine. It polls only what you asked it to watch. When something changes, it types a short `[kelpie]` update into the terminal where the agent runs, in a [herdr](https://herdr.dev) pane or an Orca worktree.
+kelpie is a small daemon that runs on your machine. It polls only what you asked it to watch. When something changes, it types a short `[kelpie]` update into the terminal where the agent runs, in a [herdr](https://herdr.dev) pane or an Orca worktree. In an Orca chat, the update arrives as a message in the chat.
 
 kelpie never acts on GitHub. It does not push, merge, comment, or mark notifications read. Text that other people wrote, such as comments, reviews, and titles, never enters the prompt. An update carries states, counts, logins, and check names, plus a `fetch:` command the agent runs to read the details with its own tools. The text of a reminder is the exception. You or your agent wrote it, and kelpie sends it unchanged.
 
@@ -91,7 +91,7 @@ The agent runs the `fetch:` commands to read the failed checks and the review, t
 kelpie needs:
 
 - Go 1.27 or later, to build it.
-- [herdr](https://herdr.dev) 0.9.5 or later, the Orca app, or both. kelpie reaches only agents that run in a herdr pane or an Orca terminal. kelpie uses herdr by default. To use Orca, see [Orca](#orca).
+- [herdr](https://herdr.dev) 0.9.5 or later, the Orca app, or both. kelpie reaches only agents that run in a herdr pane, an Orca terminal, or an Orca chat. kelpie uses herdr by default. To use Orca, see [Orca](#orca).
 - The GitHub CLI `gh`, logged in (`gh auth status`). kelpie uses the same GitHub access as your agent.
 - `jq` and `bash`, for the herdr plugin only.
 
@@ -127,7 +127,7 @@ Before you run `kelpie service install`, stop any daemon from a kelpie build wit
 
 ## Quick start
 
-`kelpie watch`, `kelpie unwatch`, and `kelpie remind` act for the herdr pane in `$HERDR_PANE_ID` or the Orca worktree in `$ORCA_WORKTREE_ID`, so run them in the agent's terminal. If both are set, `$TERM_PROGRAM` decides. To act for another pane or worktree, pass `--workspace <id>` with the ID as `kelpie status` lists it. A herdr pane ID looks like `w1:p2`. It is not the ID of a herdr workspace.
+`kelpie watch`, `kelpie unwatch`, and `kelpie remind` act for the herdr pane in `$HERDR_PANE_ID` or the Orca worktree in `$ORCA_WORKTREE_ID`, so run them in the agent's terminal. In an Orca chat, they act for the worktree of the chat. If both are set, `$TERM_PROGRAM` decides. To act for another pane or worktree, pass `--workspace <id>` with the ID as `kelpie status` lists it. A herdr pane ID looks like `w1:p2`. It is not the ID of a herdr workspace.
 
 1. Start the daemon in a spare terminal and leave it running. With herdr, also link the [herdr plugin](#herdr-plugin), which starts the daemon each time herdr starts from then on. Without herdr, run [`kelpie service install`](#run-the-daemon-at-login) to start it at every login. To try kelpie first, run `kelpie daemon --dry-run`. It prints each update instead of typing it into a terminal.
 
@@ -270,9 +270,9 @@ hosts:
     comment: false  # true replaces the worktree's comment while a watch exists
 ```
 
-A watch belongs to an Orca worktree, not to one terminal. Run `kelpie watch` in an Orca terminal and the watch goes to that worktree. `kelpie status` calls the worktree a pane and lists it as `orca:` followed by `$ORCA_WORKTREE_ID`.
+A watch belongs to an Orca worktree, not to one terminal or chat. Run `kelpie watch` in an Orca terminal or chat and the watch goes to that worktree. A chat has no `$ORCA_WORKTREE_ID`, so kelpie looks up the worktree of the chat's `$ORCA_AGENT_SESSION_ID` with `orca worktree ps`. `kelpie status` calls the worktree a pane and lists it as `orca:` followed by the worktree ID.
 
-Orca sends no events, so kelpie polls it every `hosts.orca.poll`. Updates go to the agent with `orca terminal send`, and only while the agent is idle. kelpie never starts Orca. While Orca is not running, the updates wait.
+Orca sends no events, so kelpie polls it every `hosts.orca.poll`. Updates go to the agent only while the agent is idle. An agent in a terminal gets them with `orca terminal send`. An agent in a chat gets them with `orca orchestration send`, which posts each update into the chat as a message from `kelpie`. If a worktree has several agents, the one Orca reports a state for and that was active last gets the update. kelpie never starts Orca. While Orca is not running, the updates wait.
 
 Orca has no notification with a title and body. When updates wait longer than `delivery.notify.stuck`, kelpie sets the worktree's unread dot instead. A watch ends when its worktree is removed or archived. The herdr plugin and the sidebar badges are herdr only. With `comment: true`, the badge text goes into the worktree's comment, and kelpie puts your comment back when the worktree has no watch left. DESIGN.md has the details in its section "Hosts: herdr and Orca".
 

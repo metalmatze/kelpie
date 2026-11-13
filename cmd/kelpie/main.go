@@ -102,7 +102,7 @@ func callerWorkspace(flag string) (string, error) {
 	if len(found) > 0 {
 		return found[0], nil
 	}
-	return "", errors.New("not inside a herdr pane, an Orca terminal or an hc terminal; pass --workspace <id as kelpie status lists it>")
+	return "", errors.New("not inside a herdr pane, an Orca terminal or chat, or an hc terminal; pass --workspace <id as kelpie status lists it>")
 }
 
 type InitCmd struct{}
