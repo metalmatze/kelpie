@@ -68,10 +68,48 @@ type cachedRepos struct {
 
 func (o *Orca) Name() string { return "orca" }
 
-// Caller is the worktree of the Orca terminal the current process runs in.
+// Caller is the worktree the current process runs in. An Orca terminal
+// names it in $ORCA_WORKTREE_ID. An Orca chat does not: it only has
+// $ORCA_AGENT_SESSION_ID, so the worktree is the one worktree ps lists that
+// session's agent in, else the one whose path holds the working directory.
 func Caller() (string, bool) {
-	id := os.Getenv("ORCA_WORKTREE_ID")
-	return prefix + id, id != ""
+	if id := os.Getenv("ORCA_WORKTREE_ID"); id != "" {
+		return prefix + id, true
+	}
+	session := os.Getenv("ORCA_AGENT_SESSION_ID")
+	if session == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rows, err := (&Orca{}).list(ctx)
+	if err != nil {
+		slog.Warn("orca chat: worktree not found", "session", session, "err", err)
+		return "", false
+	}
+	cwd, _ := os.Getwd()
+	if w, ok := callerWorktree(rows, session, cwd); ok {
+		return prefix + w.WorktreeID, true
+	}
+	return "", false
+}
+
+func callerWorktree(rows []worktree, session, dir string) (worktree, bool) {
+	for _, w := range rows {
+		for _, a := range w.Agents {
+			if s, ok := a.session(); ok && s == session {
+				return w, true
+			}
+		}
+	}
+	var best worktree
+	for _, w := range rows {
+		rel, err := filepath.Rel(w.Path, dir)
+		if err == nil && filepath.IsLocal(rel) && len(w.Path) > len(best.Path) {
+			best = w
+		}
+	}
+	return best, best.Path != ""
 }
 
 type worktree struct {
@@ -92,10 +130,37 @@ type agent struct {
 	ProgramStatus *struct {
 		State string `json:"state"`
 	} `json:"programStatus"`
+	// MainAgent is the agent's own state, without its children. State
+	// counts a chat's background tasks too and stays working while one
+	// runs, though the chat is idle and takes a prompt.
+	MainAgent *struct {
+		State string `json:"state"`
+	} `json:"mainAgent"`
+	UpdatedAt int64 `json:"updatedAt"` // ms; a chat's last activity
+}
+
+// chatPane prefixes the pane key of an agent that runs as an Orca chat (a
+// structured session) instead of in a terminal:
+// "structured-agent-session-<sessionId>:<leafId>".
+const chatPane = "structured-agent-session-"
+
+func (a agent) session() (string, bool) {
+	rest, ok := strings.CutPrefix(a.PaneKey, chatPane)
+	if !ok {
+		return "", false
+	}
+	id, _, _ := strings.Cut(rest, ":")
+	return id, id != ""
 }
 
 func (a agent) state() host.AgentState {
 	s := a.State
+	// Only a working aggregate gives way to the main agent's own state: a
+	// background child keeps it working while the chat is idle. A blocked
+	// one stays blocked, as a child may wait at a question.
+	if s == "working" && a.MainAgent != nil && a.MainAgent.State != "" {
+		s = a.MainAgent.State
+	}
 	if a.ProgramStatus != nil && a.ProgramStatus.State != "" {
 		s = a.ProgramStatus.State
 	}
@@ -298,36 +363,56 @@ type terminal struct {
 	LastOutputAt  int64   `json:"lastOutputAt"`
 }
 
-// terminal picks the agent's terminal in a worktree: a worktree also has
-// plain shells, and orphaned terminals (left from before Orca restarted)
-// are not attached to any tab. An agent Orca reports state for wins over
-// one it only recognises by name, then the one that printed last.
-func (o *Orca) terminal(ctx context.Context, w worktree) (terminal, error) {
+type target struct {
+	handle  string // terminal handle; empty for a chat
+	session string // chat session ID; empty for a terminal
+	known   bool   // Orca reports the agent's state
+	active  int64  // ms of the last output or chat activity
+}
+
+// target picks the agent to prompt in a worktree. Its candidates are the
+// agent terminals (a worktree also has plain shells, and orphaned
+// terminals, left from before Orca restarted, are not attached to any tab)
+// and the agents running as chats. An agent Orca reports state for wins
+// over one it only recognises by name, which leaves chats and hooked-up
+// terminals on par; then the one active last wins, as that is most likely
+// the agent the person works with.
+func (o *Orca) target(ctx context.Context, w worktree) (target, error) {
 	var resp struct {
 		Terminals []terminal `json:"terminals"`
 	}
 	if err := o.run(ctx, &resp, "terminal", "list", "--worktree", "id:"+w.WorktreeID); err != nil {
-		return terminal{}, err
+		return target{}, err
 	}
+	return pick(w, resp.Terminals)
+}
+
+func pick(w worktree, terms []terminal) (target, error) {
 	known := map[string]bool{}
+	var cands []target
 	for _, a := range w.Agents {
 		known[a.PaneKey] = true
+		if s, ok := a.session(); ok {
+			cands = append(cands, target{session: s, known: true, active: a.UpdatedAt})
+		}
 	}
-	cands := slices.DeleteFunc(resp.Terminals, func(t terminal) bool {
-		return t.Orphaned || !t.Writable || t.AgentIdentity == nil
-	})
+	for _, t := range terms {
+		if t.Orphaned || !t.Writable || t.AgentIdentity == nil {
+			continue
+		}
+		cands = append(cands, target{handle: t.Handle, known: known[t.TabID+":"+t.LeafID], active: t.LastOutputAt})
+	}
 	if len(cands) == 0 {
-		return terminal{}, errors.New("no agent terminal in this worktree")
+		return target{}, errors.New("no agent terminal or chat in this worktree")
 	}
-	return slices.MaxFunc(cands, func(a, b terminal) int {
-		ka, kb := known[a.TabID+":"+a.LeafID], known[b.TabID+":"+b.LeafID]
-		if ka != kb {
-			if ka {
+	return slices.MaxFunc(cands, func(a, b target) int {
+		if a.known != b.known {
+			if a.known {
 				return 1
 			}
 			return -1
 		}
-		return cmp.Compare(a.LastOutputAt, b.LastOutputAt)
+		return cmp.Compare(a.active, b.active)
 	}), nil
 }
 
@@ -348,12 +433,15 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 	case host.Working:
 		return host.ErrBusy
 	}
-	t, err := o.terminal(ctx, w)
+	t, err := o.target(ctx, w)
 	if err != nil {
 		return err
 	}
+	if t.session != "" {
+		return o.prompt(ctx, w, t.session, text)
+	}
 	if w.state() == host.Unknown {
-		err := o.run(ctx, nil, "terminal", "wait", "--terminal", t.Handle, "--for", "tui-idle", "--timeout-ms", "1000")
+		err := o.run(ctx, nil, "terminal", "wait", "--terminal", t.handle, "--for", "tui-idle", "--timeout-ms", "1000")
 		if code(err) == "timeout" {
 			return host.ErrBusy
 		} else if err != nil {
@@ -371,7 +459,7 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 	// other (a timeout, a killed or unreadable orca) may have typed the
 	// text already, and a retry would type it twice. A stale handle needs
 	// no retry here: the router retries, and terminal looks it up again.
-	err = o.run(ctx, &resp, "terminal", "send", "--terminal", t.Handle, "--text", text, "--enter", "--wait-submit", "10")
+	err = o.run(ctx, &resp, "terminal", "send", "--terminal", t.handle, "--text", text, "--enter", "--wait-submit", "10")
 	switch c := code(err); {
 	case err == nil:
 	case c == "agent_prompt_blocked":
@@ -398,6 +486,38 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 		}
 	}
 	return fmt.Errorf("%w: orca reported stages %v", host.ErrUnconfirmed, resp.Send.Prompt.Stages)
+}
+
+// prompt hands text to an agent that runs as an Orca chat. A chat has no
+// terminal to type into; Orca's way in is the orchestration mailbox of its
+// session, which posts each message to the chat as a prompt of its own,
+// headed by the sender. Orca delivers into a working chat too, in the
+// middle of its turn, so only an idle chat gets one. The mailbox keeps a
+// message it accepted and delivers it itself, so an accepted send is a
+// delivery. A send fails before anything is stored only when orca did not
+// start, names the session or sender unknown, or refuses the sender for
+// an agent session; any other failure may have stored the message, and a
+// retry would post it twice.
+func (o *Orca) prompt(ctx context.Context, w worktree, session, text string) error {
+	if w.state() != host.Idle {
+		return host.ErrBusy
+	}
+	var resp struct {
+		Message struct {
+			ID string `json:"id"`
+		} `json:"message"`
+	}
+	err := o.run(ctx, &resp, "orchestration", "send", "--from", "kelpie", "--to", "orca_session_id:"+session,
+		"--type", "status", "--subject", "kelpie", "--body", text, "--full")
+	switch c := code(err); {
+	case err == nil:
+		slog.Debug("orca chat prompted", "session", session, "message", resp.Message.ID)
+		return nil
+	case c == "session_caller_unknown", c == "no_active_sender_terminal", c == "consumer_fenced", errors.Is(err, errNotStarted):
+		return err
+	default:
+		return fmt.Errorf("%w: %w", host.ErrUnconfirmed, err)
+	}
 }
 
 // Badge replaces the worktree's comment, the line on its card in Orca's
@@ -593,10 +713,21 @@ func (o *Orca) bin() string {
 	return "orca"
 }
 
+// callerVars make orca act as the agent session or terminal they name. A
+// daemon started from inside Orca inherits them, and orchestration send
+// then refuses --from kelpie (consumer_fenced) or sends as that agent.
+var callerVars = []string{"ORCA_AGENT_SESSION_ID", "ORCA_AGENT_SESSION_SPAWN_TOKEN", "ORCA_TERMINAL_HANDLE"}
+
 // run calls orca with --json. orca answers failures as JSON on stdout with
 // exit status 1, so the envelope decides, not the exit status.
 func (o *Orca) run(ctx context.Context, into any, args ...string) error {
 	cmd := exec.CommandContext(ctx, o.bin(), append(args, "--json")...)
+	if args[0] == "orchestration" {
+		cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			k, _, _ := strings.Cut(kv, "=")
+			return slices.Contains(callerVars, k)
+		})
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
