@@ -94,8 +94,6 @@ func Caller() (string, bool) {
 	return "", false
 }
 
-// callerWorktree finds the worktree of a chat session: the one listing the
-// session's agent, else the deepest one whose path holds dir.
 func callerWorktree(rows []worktree, session, dir string) (worktree, bool) {
 	for _, w := range rows {
 		for _, a := range w.Agents {
@@ -107,7 +105,7 @@ func callerWorktree(rows []worktree, session, dir string) (worktree, bool) {
 	var best worktree
 	for _, w := range rows {
 		rel, err := filepath.Rel(w.Path, dir)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") && len(w.Path) > len(best.Path) {
+		if err == nil && filepath.IsLocal(rel) && len(w.Path) > len(best.Path) {
 			best = w
 		}
 	}
@@ -146,7 +144,6 @@ type agent struct {
 // "structured-agent-session-<sessionId>:<leafId>".
 const chatPane = "structured-agent-session-"
 
-// session is the chat session ID of an agent that runs as a chat.
 func (a agent) session() (string, bool) {
 	rest, ok := strings.CutPrefix(a.PaneKey, chatPane)
 	if !ok {
@@ -366,7 +363,6 @@ type terminal struct {
 	LastOutputAt  int64   `json:"lastOutputAt"`
 }
 
-// target is where a prompt goes: an agent terminal or an agent chat.
 type target struct {
 	handle  string // terminal handle; empty for a chat
 	session string // chat session ID; empty for a terminal

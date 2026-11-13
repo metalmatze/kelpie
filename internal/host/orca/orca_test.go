@@ -38,7 +38,6 @@ func TestAgentState(t *testing.T) {
 		{`{"state":"working","mainAgent":{"state":"blocked"}}`, host.Blocked},
 		// A child waits at a question: the main agent being idle does not count.
 		{`{"state":"blocked","mainAgent":{"state":"done"}}`, host.Blocked},
-		// A terminal: its program status wins over the hooks.
 		{`{"state":"waiting","programStatus":{"state":"idle"}}`, host.Idle},
 		{`{"state":"idle","mainAgent":{"state":"idle"},"programStatus":{"state":"working"}}`, host.Working},
 	} {
@@ -112,7 +111,7 @@ func TestCallerWorktree(t *testing.T) {
 		{WorktreeID: "r::/src/other", Path: "/src/other", Agents: []agent{{PaneKey: chatPane + "s2:leaf"}}},
 	}
 	for _, tc := range []struct{ session, dir, want string }{
-		{"s2", "/elsewhere", "r::/src/other"}, // the session's agent decides
+		{"s2", "/elsewhere", "r::/src/other"},
 		{"s9", "/src/wt/internal", "r::/src/wt"},
 		{"s9", "/src/wtx", "r::/src"},
 		{"s9", "/elsewhere", ""},
