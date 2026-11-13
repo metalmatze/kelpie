@@ -151,10 +151,11 @@ esac
 
 func TestDeliverChat(t *testing.T) {
 	const (
-		ok      = `{"ok":true,"result":{"message":{"id":"msg_1"}}}`
-		unknown = `{"ok":false,"error":{"code":"session_caller_unknown","message":"No message was sent."}}`
-		fenced  = `{"ok":false,"error":{"code":"consumer_fenced","message":"No request was sent."}}`
-		timeout = `{"ok":false,"error":{"code":"runtime_timeout","message":"timed out"}}`
+		ok       = `{"ok":true,"result":{"message":{"id":"msg_1"}}}`
+		unknown  = `{"ok":false,"error":{"code":"session_caller_unknown","message":"No message was sent."}}`
+		fenced   = `{"ok":false,"error":{"code":"consumer_fenced","message":"No request was sent."}}`
+		noSender = `{"ok":false,"error":{"code":"no_active_sender_terminal","message":"Could not determine the calling terminal."}}`
+		timeout  = `{"ok":false,"error":{"code":"runtime_timeout","message":"timed out"}}`
 	)
 	ws := host.Workspace{Host: "orca", ID: "orca:r::/src"}
 	// A daemon started from an Orca chat or terminal: orca would send as
@@ -173,6 +174,7 @@ func TestDeliverChat(t *testing.T) {
 		{name: "blocked chat waits", state: "blocked", send: ok, want: host.ErrBlocked},
 		{name: "unknown session is retryable", state: "idle", send: unknown, sent: true, want: errAny},
 		{name: "a fenced sender is retryable", state: "idle", send: fenced, sent: true, want: errAny},
+		{name: "an unknown sender is retryable", state: "idle", send: noSender, sent: true, want: errAny},
 		{name: "other failures are never resent", state: "idle", send: timeout, sent: true, want: host.ErrUnconfirmed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
