@@ -158,7 +158,10 @@ func (a agent) session() (string, bool) {
 
 func (a agent) state() host.AgentState {
 	s := a.State
-	if a.MainAgent != nil && a.MainAgent.State != "" {
+	// Only a working aggregate gives way to the main agent's own state: a
+	// background child keeps it working while the chat is idle. A blocked
+	// one stays blocked, as a child may wait at a question.
+	if s == "working" && a.MainAgent != nil && a.MainAgent.State != "" {
 		s = a.MainAgent.State
 	}
 	if a.ProgramStatus != nil && a.ProgramStatus.State != "" {

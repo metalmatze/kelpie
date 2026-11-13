@@ -36,6 +36,8 @@ func TestAgentState(t *testing.T) {
 		{`{"state":"working","mainAgent":{"state":"done"},"children":[{"kind":"command","state":"working"}]}`, host.Idle},
 		{`{"state":"working","mainAgent":{"state":"working"}}`, host.Working},
 		{`{"state":"working","mainAgent":{"state":"blocked"}}`, host.Blocked},
+		// A child waits at a question: the main agent being idle does not count.
+		{`{"state":"blocked","mainAgent":{"state":"done"}}`, host.Blocked},
 		// A terminal: its program status wins over the hooks.
 		{`{"state":"waiting","programStatus":{"state":"idle"}}`, host.Idle},
 		{`{"state":"idle","mainAgent":{"state":"idle"},"programStatus":{"state":"working"}}`, host.Working},
@@ -135,7 +137,7 @@ case "$1 $2" in
 "worktree ps") echo '` + ps + `' ;;
 "terminal list") echo '{"ok":true,"result":{"terminals":[]}}' ;;
 "orchestration send")
-	if [ -n "$ORCA_AGENT_SESSION_ID" ]; then echo '{"ok":false,"error":{"code":"consumer_fenced"}}'; exit 1; fi
+	if [ -n "$ORCA_AGENT_SESSION_ID$ORCA_AGENT_SESSION_SPAWN_TOKEN$ORCA_TERMINAL_HANDLE" ]; then echo '{"ok":false,"error":{"code":"consumer_fenced"}}'; exit 1; fi
 	printf '%s\n' "$*" >> '` + log + `'; echo '` + send + `'; exit 1 ;;
 *) echo '{"ok":false,"error":{"code":"unexpected"}}'; exit 1 ;;
 esac
@@ -151,11 +153,15 @@ func TestDeliverChat(t *testing.T) {
 	const (
 		ok      = `{"ok":true,"result":{"message":{"id":"msg_1"}}}`
 		unknown = `{"ok":false,"error":{"code":"session_caller_unknown","message":"No message was sent."}}`
+		fenced  = `{"ok":false,"error":{"code":"consumer_fenced","message":"No request was sent."}}`
 		timeout = `{"ok":false,"error":{"code":"runtime_timeout","message":"timed out"}}`
 	)
 	ws := host.Workspace{Host: "orca", ID: "orca:r::/src"}
-	// A daemon started from an Orca chat: orca would send as that chat.
-	t.Setenv("ORCA_AGENT_SESSION_ID", "daemon-parent")
+	// A daemon started from an Orca chat or terminal: orca would send as
+	// that agent unless every caller variable is stripped.
+	for _, v := range callerVars {
+		t.Setenv(v, "daemon-parent")
+	}
 	for _, tc := range []struct {
 		name, state, send string
 		sent              bool
@@ -166,6 +172,7 @@ func TestDeliverChat(t *testing.T) {
 		{name: "working chat waits", state: "working", send: ok, want: host.ErrBusy},
 		{name: "blocked chat waits", state: "blocked", send: ok, want: host.ErrBlocked},
 		{name: "unknown session is retryable", state: "idle", send: unknown, sent: true, want: errAny},
+		{name: "a fenced sender is retryable", state: "idle", send: fenced, sent: true, want: errAny},
 		{name: "other failures are never resent", state: "idle", send: timeout, sent: true, want: host.ErrUnconfirmed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

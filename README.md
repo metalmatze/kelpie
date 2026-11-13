@@ -127,7 +127,7 @@ Before you run `kelpie service install`, stop any daemon from a kelpie build wit
 
 ## Quick start
 
-`kelpie watch`, `kelpie unwatch`, and `kelpie remind` act for the herdr pane in `$HERDR_PANE_ID` or the Orca worktree in `$ORCA_WORKTREE_ID`, so run them in the agent's terminal. In an Orca chat, they act for the worktree of the chat. If both are set, `$TERM_PROGRAM` decides. To act for another pane or worktree, pass `--workspace <id>` with the ID as `kelpie status` lists it. A herdr pane ID looks like `w1:p2`. It is not the ID of a herdr workspace.
+`kelpie watch`, `kelpie unwatch`, and `kelpie remind` act for the herdr pane in `$HERDR_PANE_ID` or the Orca worktree in `$ORCA_WORKTREE_ID`, so run them in the agent's terminal. In an Orca chat, which has no `$ORCA_WORKTREE_ID`, they act for the worktree of the chat's `$ORCA_AGENT_SESSION_ID`. If both are set, `$TERM_PROGRAM` decides. To act for another pane or worktree, pass `--workspace <id>` with the ID as `kelpie status` lists it. A herdr pane ID looks like `w1:p2`. It is not the ID of a herdr workspace.
 
 1. Start the daemon in a spare terminal and leave it running. With herdr, also link the [herdr plugin](#herdr-plugin), which starts the daemon each time herdr starts from then on. Without herdr, run [`kelpie service install`](#run-the-daemon-at-login) to start it at every login. To try kelpie first, run `kelpie daemon --dry-run`. It prints each update instead of typing it into a terminal.
 
