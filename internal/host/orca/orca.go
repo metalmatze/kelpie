@@ -132,6 +132,12 @@ type agent struct {
 	ProgramStatus *struct {
 		State string `json:"state"`
 	} `json:"programStatus"`
+	// MainAgent is the agent's own state, without its children. State
+	// counts a chat's background tasks too and stays working while one
+	// runs, though the chat is idle and takes a prompt.
+	MainAgent *struct {
+		State string `json:"state"`
+	} `json:"mainAgent"`
 	UpdatedAt int64 `json:"updatedAt"` // ms; a chat's last activity
 }
 
@@ -152,6 +158,9 @@ func (a agent) session() (string, bool) {
 
 func (a agent) state() host.AgentState {
 	s := a.State
+	if a.MainAgent != nil && a.MainAgent.State != "" {
+		s = a.MainAgent.State
+	}
 	if a.ProgramStatus != nil && a.ProgramStatus.State != "" {
 		s = a.ProgramStatus.State
 	}

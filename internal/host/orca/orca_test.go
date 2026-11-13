@@ -2,6 +2,7 @@ package orca
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +22,30 @@ func TestSession(t *testing.T) {
 		got, ok := agent{PaneKey: key}.session()
 		if got != want || ok != (want != "") {
 			t.Errorf("session(%q) = %q, %v; want %q", key, got, ok, want)
+		}
+	}
+}
+
+func TestAgentState(t *testing.T) {
+	for _, tc := range []struct {
+		json string
+		want host.AgentState
+	}{
+		{`{"state":"idle"}`, host.Idle},
+		// A chat idle at the prompt while a background task runs.
+		{`{"state":"working","mainAgent":{"state":"done"},"children":[{"kind":"command","state":"working"}]}`, host.Idle},
+		{`{"state":"working","mainAgent":{"state":"working"}}`, host.Working},
+		{`{"state":"working","mainAgent":{"state":"blocked"}}`, host.Blocked},
+		// A terminal: its program status wins over the hooks.
+		{`{"state":"waiting","programStatus":{"state":"idle"}}`, host.Idle},
+		{`{"state":"idle","mainAgent":{"state":"idle"},"programStatus":{"state":"working"}}`, host.Working},
+	} {
+		var a agent
+		if err := json.Unmarshal([]byte(tc.json), &a); err != nil {
+			t.Fatal(err)
+		}
+		if got := a.state(); got != tc.want {
+			t.Errorf("state of %s = %s; want %s", tc.json, got, tc.want)
 		}
 	}
 }
