@@ -156,7 +156,7 @@ func TestDeliverChat(t *testing.T) {
 			if sent := len(data) > 0; sent != tc.sent {
 				t.Fatalf("sent = %v; want %v", sent, tc.sent)
 			}
-			if tc.sent && !strings.Contains(string(data), "--from kelpie --to orca_session_id:s1 ") || tc.sent && !strings.Contains(string(data), "--body [kelpie] hello") {
+			if tc.sent && !strings.Contains(string(data), "--from kelpie --to orca_session_id:s1 ") || tc.sent && !strings.Contains(string(data), "--body [kelpie] hello --full") {
 				t.Errorf("send args = %s", data)
 			}
 		})

@@ -500,7 +500,7 @@ func (o *Orca) prompt(ctx context.Context, w worktree, session, text string) err
 		} `json:"message"`
 	}
 	err := o.run(ctx, &resp, "orchestration", "send", "--from", "kelpie", "--to", "orca_session_id:"+session,
-		"--type", "status", "--subject", "kelpie", "--body", text)
+		"--type", "status", "--subject", "kelpie", "--body", text, "--full")
 	switch c := code(err); {
 	case err == nil:
 		slog.Debug("orca chat prompted", "session", session, "message", resp.Message.ID)
