@@ -74,10 +74,11 @@ func (h *Herdr) workspace(ctx context.Context, p paneInfo) host.Workspace {
 	c, ok := h.panes[p.PaneID]
 	h.mu.Unlock()
 	if ok && c.ws.Path == path && time.Since(c.at) < 30*time.Second {
+		c.ws.Agent = p.Agent != ""
 		return c.ws
 	}
 	branch, repos := host.GitInfo(ctx, path)
-	ws := host.Workspace{Host: h.Name(), ID: p.PaneID, Repos: repos, Branch: branch, Path: path}
+	ws := host.Workspace{Host: h.Name(), ID: p.PaneID, Repos: repos, Branch: branch, Path: path, Agent: p.Agent != ""}
 	h.mu.Lock()
 	if h.panes == nil {
 		h.panes = map[string]cachedPane{}

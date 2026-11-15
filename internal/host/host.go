@@ -15,6 +15,10 @@ type Workspace struct {
 	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
 	Branch string
 	Path   string
+	// Agent breaks a tie between workspaces on one branch, so a shell pane
+	// next to the agent does not silence branch binding. A host that cannot
+	// tell (hc) leaves it false.
+	Agent bool
 }
 
 var prefixed = []string{"orca", "hc"}

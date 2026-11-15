@@ -199,6 +199,7 @@ func (o *Orca) workspace(ctx context.Context, w worktree) host.Workspace {
 		Repos:  c.repos,
 		Branch: strings.TrimPrefix(w.Branch, "refs/heads/"),
 		Path:   w.Path,
+		Agent:  len(w.Agents) > 0,
 	}
 }
 
