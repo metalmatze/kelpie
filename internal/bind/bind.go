@@ -175,6 +175,11 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 			candidates = append(candidates, ws)
 		}
 	}
+	// A worktree often has a shell pane next to its agent. Two agents on
+	// one branch stay ambiguous: either could own the work.
+	if agents := slices.DeleteFunc(slices.Clone(candidates), func(ws host.Workspace) bool { return !ws.Agent }); len(agents) == 1 {
+		candidates = agents
+	}
 	switch len(candidates) {
 	case 1:
 		bd := core.Binding{Subject: ev.Subject, Workspace: candidates[0].ID, Via: "branch", Since: b.now()}

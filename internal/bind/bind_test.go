@@ -39,6 +39,23 @@ func TestBranchBinding(t *testing.T) {
 	if got := b.Resolve(pr); got != nil {
 		t.Fatal("ambiguous match bound")
 	}
+	// An agent's pane and a shell pane: the agent's. Two agents: still nobody.
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+		{Host: "herdr", ID: "w3:p1", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+	})
+	if got := b.Resolve(pr); len(got) != 1 || got[0].Workspace.ID != "w3:p1" || !got[0].New {
+		t.Fatalf("agent pane not preferred: %+v", got)
+	}
+	b.Unbind(pr.Subject, "w3:p1")
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+		{Host: "herdr", ID: "w3:p1", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+		{Host: "herdr", ID: "w4:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+	})
+	if got := b.Resolve(pr); got != nil {
+		t.Fatalf("two agents bound: %+v", got)
+	}
 
 	// Closing the workspace ends the binding.
 	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"}})
@@ -144,6 +161,15 @@ func TestLinearBranchBinding(t *testing.T) {
 	// PRs still need binders.branch.
 	if got := b.Resolve(core.Event{Subject: "github:acme/api#1", Bind: map[string]string{"repo": "acme/api", "branch": "main"}}); got != nil {
 		t.Fatalf("PR bound by LinearBranch: %+v", got)
+	}
+	// The same tie-break as for PRs: the agent's pane, not the shell next to it.
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"},
+		{Host: "herdr", ID: "w1:p2", Branch: "matthias/eng-123-fix-auth", Agent: true},
+	})
+	b.Unbind(ev.Subject, "w1:p1")
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p2" {
+		t.Fatalf("agent pane not preferred for a Linear issue: %+v", got)
 	}
 	// binders.branch alone does not turn the Linear binder on.
 	b2 := New(state.NewMemory(), true)
