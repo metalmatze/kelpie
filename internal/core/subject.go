@@ -22,6 +22,10 @@ var (
 	// never asked for.
 	discussionURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/discussions/\d+`)
 
+	// Any releases page, a single release (/releases/tag/v1) included, means
+	// the repo's releases; the repo itself means its notifications.
+	releasesURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/releases(?:[/?#].*)?$`)
+
 	ownerURL   = regexp.MustCompile(`^https?://github\.com/([\w.-]+)(?:/([\w.-]+))?(?:[/?#].*)?$`)
 	ownerShort = regexp.MustCompile(`^([\w.-]+)(?:/([\w.-]+))?$`)
 )
@@ -44,7 +48,8 @@ type IsPR func(owner, name, number string) (bool, error)
 // pull request URL (any sub-page, like /files or #discussion_r1) is the PR:
 // github:owner/repo#123. An issue URL is the issue: github-issue:owner/repo#7.
 // A workflow run URL (any of its pages) is the run:
-// github-run:owner/repo/42043979918. owner/repo#123 is whichever isPR says, a
+// github-run:owner/repo/42043979918. Any releases page of a repo is its
+// releases: github-release:owner/repo. owner/repo#123 is whichever isPR says, a
 // PR when isPR is nil. A repo (owner/repo), an org, or a github.com URL of
 // either is its notifications: github-inbox:owner/repo or github-inbox:owner.
 // Other repo pages (/actions, /tree/...) still mean the repo; a single
@@ -63,6 +68,9 @@ func GitHubSubject(s string, isPR IsPR) (Subject, error) {
 	}
 	if m := runURL.FindStringSubmatch(s); m != nil {
 		return Subject(fmt.Sprintf("github-run:%s/%s/%s", m[1], m[2], m[3])), nil
+	}
+	if m := releasesURL.FindStringSubmatch(s); m != nil {
+		return Subject(fmt.Sprintf("github-release:%s/%s", m[1], m[2])), nil
 	}
 	if m := numShort.FindStringSubmatch(s); m != nil {
 		pr := true
@@ -85,7 +93,7 @@ func GitHubSubject(s string, isPR IsPR) (Subject, error) {
 		m = ownerShort.FindStringSubmatch(s)
 	}
 	if m == nil {
-		return "", fmt.Errorf("cannot parse %q: want a pull request, issue or workflow run URL, owner/repo#number, owner/repo or an org", s)
+		return "", fmt.Errorf("cannot parse %q: want a pull request, issue, workflow run or releases URL, owner/repo#number, owner/repo or an org", s)
 	}
 	if m[2] == "" {
 		return Subject("github-inbox:" + m[1]), nil
