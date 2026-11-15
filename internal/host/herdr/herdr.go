@@ -88,6 +88,21 @@ func (h *Herdr) workspace(ctx context.Context, p paneInfo) host.Workspace {
 	return ws
 }
 
+// setAgent follows pane.agent_detected: an agent starting in a pane or
+// leaving it comes with no pane.updated, and while the event stream is up
+// nothing lists the panes again.
+func (h *Herdr) setAgent(id string, agent bool) (host.Workspace, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c, ok := h.panes[id]
+	if !ok {
+		return host.Workspace{}, false
+	}
+	c.ws.Agent = agent
+	h.panes[id] = c
+	return c.ws, true
+}
+
 // forget drops a pane that closed or moved, and its share of its
 // workspace's badge.
 func (h *Herdr) forget(ctx context.Context, id string) {
