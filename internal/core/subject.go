@@ -22,8 +22,6 @@ var (
 	// never asked for.
 	discussionURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/discussions/\d+`)
 
-	// Any releases page, a single release (/releases/tag/v1) included, means
-	// the repo's releases; the repo itself means its notifications.
 	releasesURL = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)/releases(?:[/?#].*)?$`)
 
 	ownerURL   = regexp.MustCompile(`^https?://github\.com/([\w.-]+)(?:/([\w.-]+))?(?:[/?#].*)?$`)

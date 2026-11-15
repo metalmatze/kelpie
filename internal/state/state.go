@@ -156,23 +156,19 @@ func (m *Memory) DeleteBinding(s core.Subject, workspace string) {
 	defer m.mu.Unlock()
 	k := bindingKey{s, workspace}
 	b, ok := m.bindings[k]
-	delete(m.bindings, k)
-	if ok && b.Via == "explicit" {
-		m.saveWatches()
-	}
 	if !ok {
 		return
 	}
-	for k := range m.bindings {
-		if k.subject == s {
+	delete(m.bindings, k)
+	if b.Via == "explicit" {
+		m.saveWatches()
+	}
+	for other := range m.bindings {
+		if other.subject == s {
 			return
 		}
 	}
-	for k := range m.snapshots {
-		if k.subject == s {
-			delete(m.snapshots, k)
-		}
-	}
+	maps.DeleteFunc(m.snapshots, func(k snapshotKey, _ map[string]any) bool { return k.subject == s })
 }
 
 func (m *Memory) Bindings(s core.Subject) []core.Binding {
