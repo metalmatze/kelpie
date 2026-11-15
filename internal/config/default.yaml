@@ -650,14 +650,15 @@ sources:
   # day, all a poll needs, and new ones are those newer than the newest
   # seen. Past 10 in a day the page decides which are seen. Not covered:
   # an issue assigned to you or away from you. Assigned away, it drops out
-  # of the list. Assigned to you, it is silent only the first time the
-  # daemon sees it; one that left and comes back is diffed against its
-  # snapshot from when it left. Nor title and description edits, labels,
-  # priority, and blockers added or removed.
+  # of the list and kelpie forgets its snapshot; assigned to you, it is
+  # silent each time it appears. A closed issue keeps its snapshot after it
+  # ages out, so a reopen still fires. Nor title and description edits,
+  # labels, priority, and blockers added or removed.
   - name: linear
     adapter: cli
     every: 120s
     auth: linear
+    page: 50              # first: 50 below; an issue that falls off a full page keeps its snapshot
     run:
       - curl
       - -sSK
