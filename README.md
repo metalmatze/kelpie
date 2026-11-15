@@ -37,7 +37,7 @@ kelpie watch github org       # the org's threads among your newest notification
 
 Follow a Linear issue for the agent that works on it. kelpie tells the agent when someone else changes the status or the assignee, or comments, and when an issue that blocks it is completed or canceled. The watch ends when the issue is completed or canceled, even if you did it yourself. kelpie refuses an issue that is already completed or canceled.
 
-You don't need a watch for an issue assigned to you while its pane is on a branch that names it, such as Linear's `user/eng-123-fix-auth`. The issue's updates go to that pane. If several panes are on the branch, they go to the one running an agent, so a shell pane next to it doesn't matter. With two agents on the branch, neither gets them and kelpie logs a warning; run `kelpie watch linear` in the right one. To turn this off, set `binders.linear: false`.
+You don't need a watch for an issue assigned to you while its pane is on a branch that names it, such as Linear's `user/eng-123-fix-auth`. The issue's updates go to that pane. If several panes are on the branch, they go to the one running an agent, so a shell pane next to it doesn't matter. With two agents on the branch, neither gets them and kelpie logs a warning; run `kelpie watch linear` in the right one. kelpie cannot tell whether an agent runs in a terminal of the Herdr app (herdr-core), so when one of the panes on the branch is such a terminal, none of them gets the updates either. To turn this off, set `binders.linear: false`.
 
 ```sh
 kelpie auth login linear     # once: paste a Linear personal API key with Read permission
