@@ -81,6 +81,7 @@ defs: |
         updated_at: .updatedAt,
         status: .state.name,
         state_type: .state.type,
+        open: (.state.type | IN("completed", "canceled") | not),
         # Empty once completed or canceled, which status.changed ignores:
         # state.completed and state.canceled report that.
         open_status: (if .state.type | IN("completed", "canceled") then "" else .state.name end),
@@ -652,8 +653,9 @@ sources:
   # an issue assigned to you or away from you. Assigned away, it drops out
   # of the list, and forget_missing forgets its snapshot; assigned to you,
   # it is silent each time it appears. A closed issue keeps its snapshot
-  # after it ages out, so a reopen still fires. Nor title and description
-  # edits, labels, priority, and blockers added or removed.
+  # after it ages out, so a reopen (state.reopened) still fires. Nor title
+  # and description edits, labels, priority, and blockers added or
+  # removed.
   - name: linear
     adapter: cli
     every: 120s
@@ -731,6 +733,14 @@ sources:
         urgent: true
         terminal: true
         summary: *linear_closed
+      # Completing ended the watch or branch binding, so this is how a pane
+      # hears the work is open again. Back in the status it had, nothing
+      # else fires: open_status kept that status while the issue was closed.
+      - field: open
+        to: true
+        kind: state.reopened
+        actor: 'linear_since($old; .status_at; .status_actor)'
+        summary: '"reopened: \($old.status) → \(.status)" + (linear_since($old; .status_at; .status_actor) | if . != "" then " by \(.)" else "" end)'
 
   # One watched Linear issue: kelpie watch linear <ID or URL>, until it is
   # completed or canceled (Duplicate is a canceled state) or the pane goes
