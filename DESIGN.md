@@ -82,7 +82,7 @@ type Adapter interface {
 ```
 
 - **No vendor SDKs.** kelpie only runs CLIs (`gh`, `kubectl`, `argocd`, `dash0`, `curl`, `herdr`, `orca`). Its own dependencies are a jq engine (gojq) and the system keychain for the credentials it holds.
-- **Snapshots, then diffs.** Most CLIs and APIs report current state, not events. The core keeps the last fields per subject, and transition rules turn changes into events: `checks` going from PENDING to FAILURE becomes `checks.failed`. A list source (one without `for_each`) forgets the snapshot of every subject its successful poll no longer returns, so a subject that comes back is new again and its first observation is silent. It keeps the snapshot of a subject that left closed, at the `to` of a `terminal` transition, so a reopen still fires. A poll that fills the source's `page` forgets nothing, since a subject missing from it may only have been pushed off. A `for_each` source keeps every snapshot, because each of its polls holds one parent's subjects.
+- **Snapshots, then diffs.** Most CLIs and APIs report current state, not events. The core keeps the last fields per subject, and transition rules turn changes into events: `checks` going from PENDING to FAILURE becomes `checks.failed`. A list source that sets `forget_missing` (of the built-in ones, only `linear`) forgets the snapshot of every subject its successful poll no longer returns, so a subject that comes back is new again and its first observation is silent. That suits a list a subject leaves for good, like issues assigned to you. Every other source keeps its snapshots: in a list of current state, such as `prom-local-errors` below, a subject that misses one poll comes back with the very change the source reports. A forgetting source keeps the snapshot of a subject that left closed, at the `to` of a `terminal` transition, so a reopen still fires. A poll that fills the source's `page` forgets nothing, since a subject missing from it may only have been pushed off. The daemon refuses `forget_missing` on a `for_each` source, because each of its polls holds one parent's subjects, and outside the `cli` adapter, whose every poll is the whole list.
 - **Mapping is config.** A jq expression per source turns raw JSON into observations, so most sources need no Go code.
 - **Every event carries `Fetch`:** the exact command that produced it, or for a source without a CLI the item it names (a Linear ID, a Slack permalink). The agent reads the details with its own tools, whatever those are.
 - **Hosts are adapters too.** herdr and Orca sit behind one `Host` interface (next section), so kelpie is not tied to either.
@@ -483,7 +483,8 @@ sources:
           '{"variables": {...}, "query": "query(...) { viewer { assignedIssues(first: 50, ...) { nodes { ... } } } }"}',
           "https://api.linear.app/graphql"]
     every: 120s
-    page: 50          # the query's first: 50; a poll that fills it may have cut subjects off, so it forgets none
+    forget_missing: true  # an issue that left the list (assigned away) comes back new, not as one stale update
+    page: 50              # the query's first: 50; a poll that fills it may have cut subjects off, so it forgets none
     map: .data.viewer.assignedIssues.nodes[] | linear_issue
 
   # Kubernetes: a streaming kubectl, local clusters only

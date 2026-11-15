@@ -25,9 +25,11 @@ type Differ struct {
 	// ForgetMissing drops the snapshot of every subject an Observe no longer
 	// holds, so a subject that comes back is a new subject again instead of
 	// being diffed against the state it left in, which would hand the agent
-	// every change since as one stale update. List sources set it: there a
-	// missing subject left the list. A for_each Differ is shared by all its
-	// parents and each Observe holds one parent's subjects, so it must not.
+	// every change since as one stale update. Only a list source that opts
+	// in with forget_missing sets it: there a missing subject has left the
+	// list, while in a list of current state its return is the news. A
+	// for_each Differ is shared by all its parents and each Observe holds
+	// one parent's subjects, so it must not.
 	//
 	// A subject that left closed, at a terminal transition's target, keeps
 	// its snapshot. A list drops closed subjects after a while (linear a day
