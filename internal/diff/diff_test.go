@@ -57,6 +57,59 @@ func TestDifferBaselineAndTransitions(t *testing.T) {
 	}
 }
 
+// An issue assigned away and back, or closed long enough to age out of the
+// linear list and then reopened, must not come back with every change since.
+func TestDifferForgetMissing(t *testing.T) {
+	rules := []config.Transition{{Field: "status", Changed: true, Kind: "status.changed"}}
+	for _, tc := range []struct {
+		name                           string
+		forget, newFire                bool
+		wantReturn                     []string
+		wantSnapshotWhileGone, wantOld bool
+	}{
+		{name: "list source", forget: true, wantReturn: nil},
+		{name: "list source with new subjects firing", forget: true, newFire: true, wantReturn: []string{"a status.changed"}},
+		{name: "for_each source", wantReturn: []string{"a status.changed"}, wantSnapshotWhileGone: true, wantOld: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := state.NewMemory()
+			st.SetSnapshot("other", "a", map[string]any{"status": "Todo"})
+			d, err := New("s", rules, st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.ForgetMissing, d.NewSubjectsFire = tc.forget, tc.newFire
+			d.Observe([]core.Observation{obs("a", map[string]any{"status": "Todo"}), obs("b", map[string]any{"status": "Todo"})})
+			d.Observe([]core.Observation{obs("b", map[string]any{"status": "Todo"})})
+
+			if _, ok := st.Snapshot("s", "a"); ok != tc.wantSnapshotWhileGone {
+				t.Errorf("snapshot of a while gone: %v, want %v", ok, tc.wantSnapshotWhileGone)
+			}
+			if _, ok := st.Snapshot("s", "b"); !ok {
+				t.Error("snapshot of b, still listed, was dropped")
+			}
+			if _, ok := st.Snapshot("other", "a"); !ok {
+				t.Error("another source's snapshot of a was dropped")
+			}
+
+			evs := d.Observe([]core.Observation{obs("a", map[string]any{"status": "Done"}), obs("b", map[string]any{"status": "Todo"})})
+			if got := kinds(evs); !slices.Equal(got, tc.wantReturn) {
+				t.Fatalf("a came back: got %v, want %v", got, tc.wantReturn)
+			}
+			if len(evs) == 1 {
+				// A new subject is diffed against nothing, never the snapshot it left.
+				want := `status: null -> "Done"`
+				if tc.wantOld {
+					want = `status: "Todo" -> "Done"`
+				}
+				if evs[0].Summary != want {
+					t.Errorf("summary %q, want %q", evs[0].Summary, want)
+				}
+			}
+		})
+	}
+}
+
 func TestIncreased(t *testing.T) {
 	for _, tc := range []struct {
 		prev, cur any

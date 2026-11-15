@@ -22,6 +22,14 @@ type Differ struct {
 	// so the first look is news, not a baseline.
 	NewSubjectsFire bool
 
+	// ForgetMissing drops the snapshot of every subject an Observe no longer
+	// holds, so a subject that comes back is a new subject again instead of
+	// being diffed against the state it left in, which would hand the agent
+	// every change since as one stale update. List sources set it: there a
+	// missing subject left the list. A for_each Differ is shared by all its
+	// parents and each Observe holds one parent's subjects, so it must not.
+	ForgetMissing bool
+
 	// mu serializes Observe: a reminder polls a subject once on top of its
 	// watch loop, and two concurrent diffs of one change would both fire.
 	mu        sync.Mutex
@@ -67,10 +75,21 @@ func New(source string, transitions []config.Transition, st state.State) (*Diffe
 // The first call is a baseline and returns nothing, so a restart never floods
 // agents with old news. A subject seen for the first time later on is stored
 // silently too: it has no previous state to transition from.
+//
+// With ForgetMissing, obs must be a whole successful poll: a failed or
+// partial one passed here would forget subjects that are still listed and
+// miss their next change.
 func (d *Differ) Observe(obs []core.Observation) []core.Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var events []core.Event
+	if d.ForgetMissing {
+		listed := make(map[core.Subject]bool, len(obs))
+		for _, o := range obs {
+			listed[o.Subject] = true
+		}
+		d.state.DeleteSnapshots(d.source, func(s core.Subject, _ map[string]any) bool { return !listed[s] })
+	}
 	for _, o := range obs {
 		old, seen := d.state.Snapshot(d.source, o.Subject)
 		d.keepKnown(o.Fields, old)

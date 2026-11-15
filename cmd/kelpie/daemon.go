@@ -205,6 +205,10 @@ func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 		if err != nil {
 			return fmt.Errorf("source %s: %w", s.Name, err)
 		}
+		// The adapter observes only polls that succeeded whole, and only
+		// for_each.subjects runners are polled once on top, so a list
+		// source's Observe always sees its complete list.
+		df.ForgetMissing = s.ForEach == nil
 		r := &runner{s: s, a: a, d: df}
 		if r.badge, err = diff.NewExpr(s.Badge); err != nil {
 			return fmt.Errorf("source %s: badge: %w", s.Name, err)
