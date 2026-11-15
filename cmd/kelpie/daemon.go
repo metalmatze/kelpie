@@ -292,9 +292,22 @@ func (d *daemon) startWatches(subject core.Subject) {
 		if !ok {
 			continue
 		}
-		r.a.Watch(d.ctx, core.Observation{Subject: subject, Fields: fields}, d.observer(r), func([]core.Observation, error) bool {
+		r.a.Watch(d.ctx, core.Observation{Subject: subject, Fields: fields}, d.watchObserver(r, subject), func([]core.Observation, error) bool {
 			return len(d.binder.Bindings(subject)) > 0
 		})
+	}
+}
+
+// watchObserver drops what a loop observes once nobody watches its subject.
+// The loop polls once more before it sees that, up to every later, and the
+// snapshot that poll stored would be what a later watch diffs against.
+func (d *daemon) watchObserver(r *runner, subject core.Subject) func([]core.Observation) {
+	observe := d.observer(r)
+	return func(obs []core.Observation) {
+		if len(d.binder.Bindings(subject)) == 0 {
+			return
+		}
+		observe(obs)
 	}
 }
 

@@ -140,3 +140,17 @@ func TestMoveKeepsSnapshots(t *testing.T) {
 		t.Fatal("snapshot forgotten by a move")
 	}
 }
+
+// A move that keeps the pane ID keeps its watches.
+func TestMoveToSameID(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	sub := core.Subject("github-release:acme/api")
+	b.Bind(core.Binding{Subject: sub, Workspace: "w1:p1", Via: "explicit"})
+
+	b.Move("w1:p1", host.Workspace{Host: "herdr", ID: "w1:p1"})
+	if _, ok := st.Binding(sub, "w1:p1"); !ok {
+		t.Fatal("binding lost by a move to the same ID")
+	}
+}
