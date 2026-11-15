@@ -220,6 +220,34 @@ func TestDefaultGitHubReleaseSource(t *testing.T) {
 	}
 }
 
+// Watching a repo's releases again after the last watch ended reports only
+// what is published from then on, not what came out in between.
+func TestDefaultGitHubReleaseSourceRewatch(t *testing.T) {
+	cfg, err := config.Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := cfg.Source("github-release")
+	m, err := NewMapper(src.Map, src.Slurp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := state.NewMemory()
+	d, err := New(src.Name, src.Transitions, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &core.Observation{Subject: "github-release:acme/api", Fields: map[string]any{"owner": "acme", "name": "api"}}
+	st.SetBinding(core.Binding{Subject: parent.Subject, Workspace: "w1:p1"})
+	observeFixtureIn(t, "github-release", m, d, parent, "1.json")
+	st.DeleteBinding(parent.Subject, "w1:p1")
+
+	st.SetBinding(core.Binding{Subject: parent.Subject, Workspace: "w1:p1"})
+	if events := observeFixtureIn(t, "github-release", m, d, parent, "3.json"); len(events) > 0 {
+		t.Fatalf("re-watch reported releases from before it: %v", events)
+	}
+}
+
 // A repo without releases is a baseline too, and its first release is news,
 // fetched with gh release view.
 func TestDefaultGitHubReleaseSourceFirstRelease(t *testing.T) {

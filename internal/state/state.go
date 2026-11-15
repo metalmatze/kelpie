@@ -27,6 +27,9 @@ type State interface {
 	// one subject, and each gets its own delivery.
 	Binding(s core.Subject, workspace string) (core.Binding, bool)
 	SetBinding(b core.Binding)
+	// DeleteBinding also forgets every snapshot of s once no workspace binds
+	// it anymore, so a later watch starts from a fresh baseline instead of
+	// reporting what changed while nobody watched.
 	DeleteBinding(s core.Subject, workspace string)
 	// Bindings lists the bindings of one subject, by workspace.
 	Bindings(s core.Subject) []core.Binding
@@ -156,6 +159,19 @@ func (m *Memory) DeleteBinding(s core.Subject, workspace string) {
 	delete(m.bindings, k)
 	if ok && b.Via == "explicit" {
 		m.saveWatches()
+	}
+	if !ok {
+		return
+	}
+	for k := range m.bindings {
+		if k.subject == s {
+			return
+		}
+	}
+	for k := range m.snapshots {
+		if k.subject == s {
+			delete(m.snapshots, k)
+		}
 	}
 }
 

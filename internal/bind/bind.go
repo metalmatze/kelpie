@@ -99,9 +99,12 @@ func (b *Binder) Move(from string, ws host.Workspace) {
 	b.workspaces[ws.ID] = ws
 	for _, bd := range b.state.AllBindings() {
 		if bd.Workspace == from {
+			// Bind the new ID first: deleting the last binding of a subject
+			// would forget its snapshots.
+			moved := bd
+			moved.Workspace = ws.ID
+			b.state.SetBinding(moved)
 			b.state.DeleteBinding(bd.Subject, from)
-			bd.Workspace = ws.ID
-			b.state.SetBinding(bd)
 		}
 	}
 }
