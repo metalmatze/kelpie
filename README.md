@@ -343,7 +343,7 @@ Unknown keys are errors. kelpie reads the file only at start, so restart the dae
 
 Settings you may want to change are `delivery.debounce`, `delivery.notify.stuck`, and `rules.allow_bots`. The comments in the default file describe the rest.
 
-The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-inbox`, and `github-inbox-org`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, and the inbox sources need `--subject`:
+The config also defines each source as a command (`gh` for GitHub, `curl` for Linear), a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-run`, `github-inbox`, `github-inbox-org`, `linear`, and `linear-issue`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, `github-run`, `linear-issue`, and the inbox sources need `--subject`:
 
 ```sh
 kelpie source test github-pr --subject https://github.com/prometheus-community/pyrra/pull/2013
@@ -351,6 +351,6 @@ kelpie source test github-pr --subject https://github.com/prometheus-community/p
 
 ## Status
 
-kelpie works with herdr and Orca. It watches PRs, issues, and notifications, sends reminders, and can run as a service.
+kelpie works with herdr and Orca. It watches GitHub PRs, issues, workflow runs, and notifications, and Linear issues. It also sends reminders and can run as a service.
 
-[DESIGN.md](DESIGN.md) describes the internals and the longer plan. Parts of it, such as Slack and Linear sources, are not built yet. DESIGN.md also lists commands that do not exist yet, such as `kelpie doctor`, `kelpie mcp login`, and `kelpie watch slack`.
+[DESIGN.md](DESIGN.md) describes the internals and the longer plan. Parts of it, such as Slack sources, are not built yet. DESIGN.md also lists commands that do not exist yet, such as `kelpie doctor`, `kelpie mcp login`, and `kelpie watch slack`.
