@@ -171,6 +171,18 @@ func TestLinearBranchBinding(t *testing.T) {
 	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p2" {
 		t.Fatalf("agent pane not preferred for a Linear issue: %+v", got)
 	}
+	// hc cannot tell whether its terminal runs an agent, so herdr's agent
+	// does not beat it: ambiguous, until one of them leaves the branch.
+	b.Unbind(ev.Subject, "w1:p2")
+	b.SetWorkspaces("hc", []host.Workspace{{Host: "hc", ID: "hc:t1", Branch: "matthias/eng-123-fix-auth"}})
+	if got := b.Resolve(ev); got != nil {
+		t.Fatalf("herdr agent won over an hc terminal: %+v", got)
+	}
+	b.SetWorkspaces("herdr", nil)
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "hc:t1" {
+		t.Fatalf("hc terminal alone on the branch: %+v", got)
+	}
+	b.SetWorkspaces("hc", nil)
 	// binders.branch alone does not turn the Linear binder on.
 	b2 := New(state.NewMemory(), true)
 	b2.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"}})

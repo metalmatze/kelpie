@@ -176,8 +176,10 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		}
 	}
 	// A worktree often has a shell pane next to its agent. Two agents on
-	// one branch stay ambiguous: either could own the work.
-	if agents := slices.DeleteFunc(slices.Clone(candidates), func(ws host.Workspace) bool { return !ws.Agent }); len(agents) == 1 {
+	// one branch stay ambiguous: either could own the work. So does a
+	// candidate whose host cannot tell, as it may run the other agent.
+	blind := slices.ContainsFunc(candidates, func(ws host.Workspace) bool { return !host.ReportsAgent(ws.Host) })
+	if agents := slices.DeleteFunc(slices.Clone(candidates), func(ws host.Workspace) bool { return !ws.Agent }); len(agents) == 1 && !blind {
 		candidates = agents
 	}
 	switch len(candidates) {
