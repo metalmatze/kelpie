@@ -116,7 +116,8 @@ type Rules struct {
 type Binders struct {
 	Branch bool `yaml:"branch"`
 	// Linear binds linear:ENG-123 to the one workspace on a branch naming
-	// the issue, like eng-123-fix-auth.
+	// the issue, like eng-123-fix-auth, or to the one of several that runs
+	// an agent.
 	Linear bool `yaml:"linear"`
 }
 
