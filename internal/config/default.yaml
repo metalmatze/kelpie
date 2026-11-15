@@ -46,6 +46,10 @@ defs: |
   def prs_merged($old): ([$old.prs // [] | .[] | select(.state == "MERGED") | .ref]) as $seen
     | [.prs[] | select(.state == "MERGED" and (.ref as $r | $seen | index($r) | not))];
 
+  # Tags of the full releases of a github-release observation published after
+  # $old.latest, newest first.
+  def releases_new($old): [.releases[] | select(.published_at > ($old.latest // ""))] | sort_by(.published_at) | reverse | map(.tag);
+
   # Check contexts of a commit, bucketed like gh pr checks, keeping only the
   # newest of re-runs so a check that failed and then passed on re-run is not
   # failed. Only required checks decide pass or fail; optional failures, such
@@ -584,3 +588,47 @@ sources:
         kind: notifications.new
         summary: *inbox_summary
         fetch: '["gh", "api", "notifications\(if $old.latest then "?since=\($old.latest)" else "" end)", "--jq", "[.[] | select(.repository.owner.login | ascii_downcase == \"\(.org)\")]"]'
+
+  # Full releases of one repo: kelpie watch github <owner/repo>/releases. Every
+  # hour, because releases are rare. Pre-releases and drafts are not news. Page 1
+  # of the releases is ordered by creation, not by publish time, so latest is
+  # the newest published_at of the full releases on it, whichever comes first.
+  # Not conditional: the releases endpoint sends no Last-Modified to send back
+  # as If-Modified-Since. Release names and notes are other people's text and
+  # stay out of the prompt: the summary has the tags. The transition takes no
+  # actor, because releases are often published by bots such as
+  # github-actions[bot], which the ignore_actors rule would drop.
+  - name: github-release
+    adapter: cli
+    every: 1h
+    for_each: { subjects: "github-release:{owner}/{name}" }
+    run: [gh, api, "repos/{owner}/{name}/releases?per_page=30"]
+    map: |
+      [.[] | select((.draft or .prerelease) | not)] as $full | {
+        fields: {
+          repo: "\($parent.owner)/\($parent.name)",
+          latest: ($full | map(.published_at) | max),
+          tag: ($full | max_by(.published_at) | .tag_name),
+          releases: ($full | map({tag: .tag_name, published_at}))
+        },
+        url: "https://github.com/\($parent.owner)/\($parent.name)/releases",
+        fetch: ["gh", "release", "list", "-R", "\($parent.owner)/\($parent.name)", "--exclude-drafts", "--exclude-pre-releases"]
+      }
+    # acme/api 🏷 v1.3.1, or acme/api before its first full release
+    badge: '"\(.repo)\(if .tag then " 🏷 \(.tag)" else "" end)"'
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]    # no full release yet
+        kind: release.new
+        summary: |
+          releases_new($old) as $new
+          | if ($new | length) == 1 then "new release \($new[0])"
+            else "\($new | length) new releases: \($new[:10] | join(", "))\(if ($new | length) > 10 then ", ..." else "" end)" end
+        # The same page the source polls, never one sized to the new
+        # releases: pre-releases and drafts share it and would push new tags
+        # off a shorter page.
+        fetch: |
+          releases_new($old) as $new
+          | if ($new | length) == 1 then ["gh", "release", "view", $new[0], "-R", .repo]
+            else ["gh", "api", "repos/\(.repo)/releases?per_page=30", "--jq", "[.[] | select(.tag_name | IN(\($new | map(tojson) | join(", "))))]"] end

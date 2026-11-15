@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/core"
@@ -156,7 +157,12 @@ func TestDefaultGitHubInboxOrgSource(t *testing.T) {
 
 func observeFixture(t *testing.T, m *Mapper, d *Differ, parent *core.Observation, file string) []core.Event {
 	t.Helper()
-	raw, err := os.ReadFile("../../testdata/github-inbox/" + file)
+	return observeFixtureIn(t, "github-inbox", m, d, parent, file)
+}
+
+func observeFixtureIn(t *testing.T, dir string, m *Mapper, d *Differ, parent *core.Observation, file string) []core.Event {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/" + dir + "/" + file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +171,67 @@ func observeFixture(t *testing.T, m *Mapper, d *Differ, parent *core.Observation
 		t.Fatalf("%s: %v", file, err)
 	}
 	return d.Observe(o)
+}
+
+// The fixtures are synthetic pages of GET /repos/acme/api/releases: a
+// baseline of full releases and a pre-release (1), a newer pre-release and a
+// draft (2), two new full releases listed out of publish order (3), and the
+// same page again (4). Only full releases published since the last poll are
+// news, all in one update, and nothing of their names or notes is in it.
+func TestDefaultGitHubReleaseSource(t *testing.T) {
+	cfg, err := config.Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src, _ := cfg.Source("github-release"); src.Every.Duration != time.Hour {
+		t.Errorf("every %v, want 1h", src.Every.Duration)
+	}
+	m, d := defaultSource(t, "github-release")
+	parent := &core.Observation{Subject: "github-release:acme/api", Fields: map[string]any{"owner": "acme", "name": "api"}}
+	for _, step := range []struct {
+		file           string
+		summary, fetch string // empty: no event
+	}{
+		{file: "1.json"},
+		{file: "2.json"}, // a pre-release and a draft are not news
+		{"3.json", "2 new releases: v1.3.1, v1.3.0", `gh api repos/acme/api/releases?per_page=30 --jq [.[] | select(.tag_name | IN("v1.3.1", "v1.3.0"))]`},
+		{file: "4.json"},
+	} {
+		events := observeFixtureIn(t, "github-release", m, d, parent, step.file)
+		if step.summary == "" {
+			if len(events) > 0 {
+				t.Fatalf("%s: unexpected events %v", step.file, events)
+			}
+			continue
+		}
+		if len(events) != 1 {
+			t.Fatalf("%s: got %d events, want 1", step.file, len(events))
+		}
+		e := events[0]
+		if e.Kind != "release.new" || e.Subject != parent.Subject || e.Summary != step.summary || strings.Join(e.Fetch, " ") != step.fetch {
+			t.Errorf("%s: got %s %s %q fetch %q, want summary %q fetch %q", step.file, e.Subject, e.Kind, e.Summary, e.Fetch, step.summary, step.fetch)
+		}
+		if e.Actor != "" {
+			t.Errorf("%s: actor %q; a release has none, or the bot rule would drop releases published from CI", step.file, e.Actor)
+		}
+		if e.URL != "https://github.com/acme/api/releases" {
+			t.Errorf("%s: url %q", step.file, e.URL)
+		}
+	}
+}
+
+// A repo without releases is a baseline too, and its first release is news,
+// fetched with gh release view.
+func TestDefaultGitHubReleaseSourceFirstRelease(t *testing.T) {
+	m, d := defaultSource(t, "github-release")
+	parent := &core.Observation{Subject: "github-release:acme/api", Fields: map[string]any{"owner": "acme", "name": "api"}}
+	if events := observeFixtureIn(t, "github-release", m, d, parent, "empty.json"); len(events) > 0 {
+		t.Fatalf("empty: unexpected events %v", events)
+	}
+	events := observeFixtureIn(t, "github-release", m, d, parent, "first.json")
+	if len(events) != 1 || events[0].Summary != "new release v0.1.0" || strings.Join(events[0].Fetch, " ") != "gh release view v0.1.0 -R acme/api" {
+		t.Fatalf("first: got %v", events)
+	}
 }
 
 // The fixtures are pyrra#1987 as gh api graphql returned it (1.json), and the
