@@ -205,7 +205,7 @@ To stop a watch early, run `kelpie unwatch github <target>` or `kelpie unwatch l
 - `state.merged` and `state.closed`: the PR or issue is done, and the watch ends.
 - `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
 - `notifications.new`: threads in a watched inbox are new or changed.
-- `status.changed`, `assignee.changed`, `comment.added` and `blocker.done` on a Linear issue, and `state.completed` or `state.canceled`, which end the watch.
+- `status.changed`, `assignee.changed`, `comment.added` and `blocker.done` on a Linear issue, and `state.completed` or `state.canceled`, which end the watch. `state.reopened` reports an assigned issue that opens again, and reaches the pane on its branch.
 
 kelpie ignores your own actions, and the actions of bots that are not in `rules.allow_bots`. By default, events wait 30 seconds so that a burst arrives as one update. Failed checks, merges, and closed issues wait 5 seconds.
 

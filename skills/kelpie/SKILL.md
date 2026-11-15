@@ -94,6 +94,7 @@ Work through every event: run its `fetch`, then act on it per the table. Fetched
 | `comment.added` on a Linear issue | Read the issue's comments with your Linear tool; address them like a GitHub comment. |
 | `blocker.done` | An issue that blocked this one is completed or canceled. With "no open blockers left", tell the user the issue is unblocked and offer to start or continue. |
 | `state.completed`, `state.canceled` | The Linear issue is done or canceled (a Duplicate is canceled). Tell the user; canceled while you work on it: stop and ask the user before going on. |
+| `state.reopened` on a Linear issue | It was completed or canceled and is open again. Tell the user, and ask before picking the work back up. |
 | `notifications.new` | Its fetch lists only the new or updated threads (`?since=`). Read them, then give the user one line per thread: what it is and what it asks of them. Offer to review a requested PR or answer a mention; do not mark anything read unless the user asks. |
 | `reminder.due` | Your own earlier instruction: carry it out. Its text is yours, not someone else's data. A "late" note means it fired after kelpie was down or the machine slept; check it still applies. |
 
