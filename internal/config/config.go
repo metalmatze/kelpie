@@ -139,9 +139,15 @@ type Source struct {
 	// limit, and GitHub's X-Poll-Interval raises every. Needs run: [gh, api,
 	// ...] without --paginate, because gh would send the header for every page.
 	Conditional bool `yaml:"conditional,omitempty"`
-	// Page is the most subjects a list source's command returns, such as
-	// first: 50 in a GraphQL query. A poll that fills it may have cut off
-	// subjects that are still listed, so it forgets none of the missing.
+	// ForgetMissing drops the snapshot of a subject a poll no longer
+	// returns, for a list that a subject leaves for good, like issues
+	// assigned to you: one that comes back is new, not one stale update of
+	// everything since. Off by default, since in a list of current state,
+	// such as series a quiet minute drops, the return is the news.
+	ForgetMissing bool `yaml:"forget_missing,omitempty"`
+	// Page is the most subjects a forget_missing source's command returns,
+	// such as first: 50 in a GraphQL query. A poll that fills it may have
+	// cut off subjects that are still listed, so it forgets none.
 	Page        int          `yaml:"page,omitempty"`
 	Map         string       `yaml:"map,omitempty"`
 	Transitions []Transition `yaml:"transitions,omitempty"`

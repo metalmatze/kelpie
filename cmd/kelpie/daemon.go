@@ -197,6 +197,17 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 
 func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 	for _, s := range sources {
+		// Forgetting a missing subject assumes each Observe is one whole poll
+		// of the list: a for_each Observe holds one parent's subjects, and a
+		// streaming adapter would observe one change at a time.
+		switch {
+		case s.ForgetMissing && s.ForEach != nil:
+			return fmt.Errorf("source %s: forget_missing is for a list source; each poll of a for_each source holds one parent's subjects", s.Name)
+		case s.ForgetMissing && s.Adapter != "cli":
+			return fmt.Errorf("source %s: forget_missing needs adapter cli, whose every poll is the whole list", s.Name)
+		case s.Page < 0 || s.Page > 0 && s.ForEach != nil:
+			return fmt.Errorf("source %s: page is the page size of a list source, a for_each source has none", s.Name)
+		}
 		a, err := adapter.New(s)
 		if err != nil {
 			return err
@@ -208,11 +219,8 @@ func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 		// The adapter observes only polls that succeeded whole, and only
 		// for_each.subjects runners are polled once on top, so a list
 		// source's Observe always sees its complete list.
-		df.ForgetMissing = s.ForEach == nil
+		df.ForgetMissing = s.ForgetMissing
 		df.Page = s.Page
-		if s.Page < 0 || s.Page > 0 && s.ForEach != nil {
-			return fmt.Errorf("source %s: page is the page size of a list source, a for_each source has none", s.Name)
-		}
 		r := &runner{s: s, a: a, d: df}
 		if r.badge, err = diff.NewExpr(s.Badge); err != nil {
 			return fmt.Errorf("source %s: badge: %w", s.Name, err)
