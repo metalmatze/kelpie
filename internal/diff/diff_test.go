@@ -134,6 +134,29 @@ func TestDifferForgetMissingKeepsClosed(t *testing.T) {
 	}
 }
 
+// The linear query asks for 50 issues. Past 50 the ones updated longest ago
+// fall off the page, and the update that brings one back must not be silent.
+func TestDifferForgetMissingFullPage(t *testing.T) {
+	st := state.NewMemory()
+	d, err := New("s", []config.Transition{{Field: "status", Changed: true, Kind: "status.changed"}}, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ForgetMissing, d.Page = true, 2
+	step := func(o ...core.Observation) []string { return kinds(d.Observe(o)) }
+	todo := func(s string) core.Observation { return obs(s, map[string]any{"status": "Todo"}) }
+
+	step(todo("a"), todo("b"))
+	step(todo("c"), todo("b")) // a fell off a full page
+	if got := step(obs("a", map[string]any{"status": "Done"}), todo("c")); !slices.Equal(got, []string{"a status.changed"}) {
+		t.Fatalf("a back on the page: got %v, want a status.changed", got)
+	}
+	step(todo("a"))
+	if _, ok := st.Snapshot("s", "c"); ok {
+		t.Error("a page that is not full kept the snapshot of c, which left")
+	}
+}
+
 func TestIncreased(t *testing.T) {
 	for _, tc := range []struct {
 		prev, cur any

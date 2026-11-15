@@ -209,6 +209,10 @@ func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 		// for_each.subjects runners are polled once on top, so a list
 		// source's Observe always sees its complete list.
 		df.ForgetMissing = s.ForEach == nil
+		df.Page = s.Page
+		if s.Page < 0 || s.Page > 0 && s.ForEach != nil {
+			return fmt.Errorf("source %s: page is the page size of a list source, a for_each source has none", s.Name)
+		}
 		r := &runner{s: s, a: a, d: df}
 		if r.badge, err = diff.NewExpr(s.Badge); err != nil {
 			return fmt.Errorf("source %s: badge: %w", s.Name, err)

@@ -137,7 +137,11 @@ type Source struct {
 	// set to the last Last-Modified. A 304 means no change and costs no rate
 	// limit, and GitHub's X-Poll-Interval raises every. Needs run: [gh, api,
 	// ...] without --paginate, because gh would send the header for every page.
-	Conditional bool         `yaml:"conditional,omitempty"`
+	Conditional bool `yaml:"conditional,omitempty"`
+	// Page is the most subjects a list source's command returns, such as
+	// first: 50 in a GraphQL query. A poll that fills it may have cut off
+	// subjects that are still listed, so it forgets none of the missing.
+	Page        int          `yaml:"page,omitempty"`
 	Map         string       `yaml:"map,omitempty"`
 	Transitions []Transition `yaml:"transitions,omitempty"`
 	// Badge is a jq expression over the fields giving a short label, shown on

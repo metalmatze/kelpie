@@ -35,6 +35,10 @@ type Differ struct {
 	// it, such as a reopen or a comment. The snapshot reports that change
 	// correctly; forgetting it would make the change silent.
 	ForgetMissing bool
+	// Page is the list's page size. Past it the subjects updated longest ago
+	// fall off, and one comes back with the update that bumped it. A full
+	// page forgets nothing, or that update would be silent.
+	Page int
 
 	// mu serializes Observe: a reminder polls a subject once on top of its
 	// watch loop, and two concurrent diffs of one change would both fire.
@@ -89,7 +93,7 @@ func (d *Differ) Observe(obs []core.Observation) []core.Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var events []core.Event
-	if d.ForgetMissing {
+	if d.ForgetMissing && (d.Page == 0 || len(obs) < d.Page) {
 		listed := make(map[core.Subject]bool, len(obs))
 		for _, o := range obs {
 			listed[o.Subject] = true
