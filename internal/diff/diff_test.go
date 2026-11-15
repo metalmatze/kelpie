@@ -110,6 +110,30 @@ func TestDifferForgetMissing(t *testing.T) {
 	}
 }
 
+// A closed issue ages out of the linear list a day after its last update
+// and comes back with the next one; a reopen must not be silent.
+func TestDifferForgetMissingKeepsClosed(t *testing.T) {
+	d, err := New("s", []config.Transition{
+		{Field: "status", Changed: true, Kind: "status.changed"},
+		{Field: "state", To: "closed", Terminal: true, Kind: "state.closed"},
+	}, state.NewMemory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ForgetMissing = true
+	step := func(o ...core.Observation) []string { return kinds(d.Observe(o)) }
+	open := func() core.Observation { return obs("a", map[string]any{"status": "Todo", "state": "open"}) }
+
+	step(open())
+	if got := step(obs("a", map[string]any{"status": "Done", "state": "closed"})); !slices.Equal(got, []string{"a state.closed", "a status.changed"}) {
+		t.Fatalf("closed: got %v", got)
+	}
+	step() // aged out of the list
+	if got := step(open()); !slices.Equal(got, []string{"a status.changed"}) {
+		t.Fatalf("reopened: got %v, want a status.changed", got)
+	}
+}
+
 func TestIncreased(t *testing.T) {
 	for _, tc := range []struct {
 		prev, cur any

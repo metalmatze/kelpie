@@ -28,6 +28,12 @@ type Differ struct {
 	// every change since as one stale update. List sources set it: there a
 	// missing subject left the list. A for_each Differ is shared by all its
 	// parents and each Observe holds one parent's subjects, so it must not.
+	//
+	// A subject that left closed, at a terminal transition's target, keeps
+	// its snapshot. A list drops closed subjects after a while (linear a day
+	// after the last update) and shows one again with the change that bumped
+	// it, such as a reopen or a comment. The snapshot reports that change
+	// correctly; forgetting it would make the change silent.
 	ForgetMissing bool
 
 	// mu serializes Observe: a reminder polls a subject once on top of its
@@ -88,7 +94,7 @@ func (d *Differ) Observe(obs []core.Observation) []core.Event {
 		for _, o := range obs {
 			listed[o.Subject] = true
 		}
-		d.state.DeleteSnapshots(d.source, func(s core.Subject, _ map[string]any) bool { return !listed[s] })
+		d.state.DeleteSnapshots(d.source, func(s core.Subject, old map[string]any) bool { return !listed[s] && !d.closed(old) })
 	}
 	for _, o := range obs {
 		old, seen := d.state.Snapshot(d.source, o.Subject)
@@ -105,6 +111,13 @@ func (d *Differ) Observe(obs []core.Observation) []core.Event {
 	}
 	d.baselined = true
 	return events
+}
+
+func (d *Differ) closed(fields map[string]any) bool {
+	return slices.ContainsFunc(d.rules, func(r rule) bool {
+		v, ok := fields[r.Field]
+		return r.Terminal && r.To != nil && ok && equal(v, r.To)
+	})
 }
 
 func (d *Differ) keepKnown(fields, old map[string]any) {
