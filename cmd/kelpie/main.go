@@ -255,11 +255,11 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 }
 
 type WatchCmd struct {
-	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request or an issue, or the notifications of a repo or org."`
+	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request, an issue, a workflow run or a repo's releases, or the notifications of a repo or org."`
 }
 
 type WatchGitHubCmd struct {
-	Target    string `arg:"" optional:"" help:"Pull request or issue URL, or owner/repo#number; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
+	Target    string `arg:"" optional:"" help:"Pull request, issue or workflow run URL, or owner/repo#number; a repo's releases URL (https://github.com/owner/repo/releases) for its releases; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
 	Workspace string `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
@@ -319,7 +319,7 @@ func githubTarget(ctx context.Context, s string) (core.Subject, error) {
 
 type UnwatchCmd struct {
 	Subject UnwatchSubjectCmd `cmd:"" default:"withargs" help:"Stop watching a subject as kelpie status lists it."`
-	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request or an issue, or the notifications of a repo or org."`
+	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request, an issue, a workflow run or a repo's releases, or the notifications of a repo or org."`
 }
 
 type UnwatchSubjectCmd struct {
@@ -336,7 +336,7 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
 }
 
 type UnwatchGitHubCmd struct {
-	Target    string `arg:"" optional:"" help:"Pull request or issue URL, or owner/repo#number; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
+	Target    string `arg:"" optional:"" help:"Pull request, issue or workflow run URL, or owner/repo#number; a repo's releases URL for its releases; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
 	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
 }
 

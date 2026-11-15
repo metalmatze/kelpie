@@ -1,6 +1,6 @@
 # kelpie
 
-kelpie types GitHub pull request, issue and workflow run updates, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
+kelpie types GitHub pull request, issue and workflow run updates, new releases, GitHub notifications, and reminders into the terminal of the coding agent that owns them.
 
 ## Use cases
 
@@ -31,6 +31,12 @@ Give an agent the GitHub notifications of a repo or an org. The agent gets a cou
 ```sh
 kelpie watch github org/api   # one repository
 kelpie watch github org       # the org's threads among your newest notifications
+```
+
+Tell an agent when a project ships a release, such as an upstream fix it waits for. kelpie checks the repo's releases every hour and reports full releases published after the watch starts, with their tags and a `fetch:` command for the notes. Pre-releases and drafts are skipped. The watch runs until you unwatch it or the pane closes.
+
+```sh
+kelpie watch github https://github.com/org/api/releases
 ```
 
 ### Set reminders for an agent
@@ -184,7 +190,7 @@ To stop a watch early, run `kelpie unwatch github <target>` with the same target
 
 ## How it works
 
-`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, and an issue or a notification inbox every 60 seconds. kelpie compares each result with the previous one and turns the differences into events, for example:
+`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, an issue or a notification inbox every 60 seconds, and a repo's releases every hour. kelpie compares each result with the previous one and turns the differences into events, for example:
 
 - `checks.failed`: a required check failed. `checks.passed`: all required checks passed.
 - `review.submitted` and `comment.added`: someone reviewed or commented.
@@ -193,6 +199,7 @@ To stop a watch early, run `kelpie unwatch github <target>` with the same target
 - `state.merged` and `state.closed`: the PR or issue is done, and the watch ends.
 - `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
 - `notifications.new`: threads in a watched inbox are new or changed.
+- `release.new`: a watched repo published one or more full releases.
 
 kelpie ignores your own actions, and the actions of bots that are not in `rules.allow_bots`. By default, events wait 30 seconds so that a burst arrives as one update. Failed checks, merges, and closed issues wait 5 seconds.
 
@@ -242,6 +249,7 @@ kelpie reports a `kelpie` token on every pane it watches for. The token has one 
 | `conflict` | The PR conflicts with its base branch. |
 | `issue #17 → #20` | A watched issue, and the open or merged PRs that will close it. `closed` follows the number of a closed issue. |
 | `owner/repo 🔔22`, `org 🔔22` | Unread notification threads, up to the 50 most recent. |
+| `owner/repo 🏷 v1.3.1` | The newest full release of a watched repo. |
 | `⏰3` | Pending reminders for the pane. |
 
 herdr shows the token only where your sidebar layout asks for it. Add a `$kelpie` row to `~/.config/herdr/config.toml`. The first two rows are herdr's default agent layout:
@@ -329,7 +337,7 @@ Unknown keys are errors. kelpie reads the file only at start, so restart the dae
 
 Settings you may want to change are `delivery.debounce`, `delivery.notify.stuck`, and `rules.allow_bots`. The comments in the default file describe the rest.
 
-The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-inbox`, and `github-inbox-org`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, and the inbox sources need `--subject`:
+The config also defines each GitHub source as a `gh` command, a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-inbox`, `github-inbox-org`, and `github-release`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, `github-release`, and the inbox sources need `--subject`:
 
 ```sh
 kelpie source test github-pr --subject https://github.com/prometheus-community/pyrra/pull/2013
@@ -337,6 +345,6 @@ kelpie source test github-pr --subject https://github.com/prometheus-community/p
 
 ## Status
 
-kelpie works with herdr and Orca. It watches PRs, issues, and notifications, sends reminders, and can run as a service.
+kelpie works with herdr and Orca. It watches PRs, issues, workflow runs, releases, and notifications, sends reminders, and can run as a service.
 
 [DESIGN.md](DESIGN.md) describes the internals and the longer plan. Parts of it, such as Slack and Linear sources, are not built yet. DESIGN.md also lists commands that do not exist yet, such as `kelpie doctor`, `kelpie mcp login`, and `kelpie watch slack`.

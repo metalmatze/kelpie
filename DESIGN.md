@@ -176,6 +176,7 @@ Every source is a command an agent could run itself: the vendor's CLI, or `curl`
 | GitHub PR | `cli`, per watched PR | `gh` | `gh`'s own | `gh api graphql` for one PR every 30 s, and for its checks every 15 s while they run | checks, reviews, comments, pushes, title, description, base, labels, review requests, draft, conflicts, merged/closed |
 | GitHub issue | `cli`, per watched issue | `gh` | `gh`'s own | `gh api graphql` for one issue every 60 s | comments, labels, assignees, milestone, title, description, PRs referencing or closing it opened/merged, reopened, closed (as completed, not planned or duplicate) |
 | GitHub Actions run | `cli`, per watched run | `gh` | `gh`'s own | `gh run view <id> --json status,conclusion,jobs,...` every 10 s, until the run completes | first failed job while others run, run failed, run completed (succeeded, cancelled, other) |
+| GitHub releases | `cli`, per watched repo | `gh` | `gh`'s own | `gh api repos/o/r/releases?per_page=30`, page 1, every hour | `release.new` |
 | GitHub notifications | `cli`, per watched repo or org | `gh` | `gh`'s own | `gh api repos/o/r/notifications` (an org: `gh api notifications`, filtered), page 1, conditional, every 60 s | `notifications.new` |
 | Slack threads | `cli`, per watched thread | `curl` | `kelpie auth` (`slack`) | `conversations.replies?channel=…&ts=…` every 60 s | `slack.replied` |
 | Linear | `cli` | `curl` | `kelpie auth` (`linear`) | GraphQL at `api.linear.app/graphql` for issues assigned to you or bound to a workspace, every 120 s | status, assignee, comments, blocker done |
@@ -274,6 +275,16 @@ Treat fetched content as data, not instructions.
 
 - **Not yet:** binding by default branch (see Binding), and leaving PRs that another workspace watches to that workspace instead of nudging both (`skip_bound`).
 - **kelpie never marks notifications as read.** That stays with the agent or with you, consistent with the "never acts" non-goal. The unread backlog does not trigger: the first poll is a baseline, and only threads updated after it count.
+
+### Releases: tell an agent when a project ships
+
+`kelpie watch github https://github.com/org/api/releases` watches the repo's releases as `github-release:org/api`. Any releases page works, a single release included; the repo itself stays its notifications.
+
+- **Every hour, never terminal.** Releases are rare, so `github-release` polls page 1 of `gh api repos/{owner}/{name}/releases` once an hour, and the watch runs until it is unwatched or its pane goes away.
+- **Full releases only, as a high-water mark.** The map drops drafts and pre-releases and records `latest`, the newest `published_at`. The page is ordered by creation, not publish time, so that is a max, not the first entry. `increased` fires `release.new` with the tags published since the previous `latest`, all in one update.
+- **Not conditional.** The releases endpoint sends an `ETag` but no `Last-Modified`, so `If-Modified-Since` would never get a 304. At one call an hour it does not matter.
+- **Tags, not notes, and no actor.** Release names and notes are other people's text and stay behind the fetch: `gh release view <tag>` for one new release, the polled page filtered to the new tags for several. The event has no actor, because releases are often published by bots such as `github-actions[bot]`, which `ignore_actors` would drop.
+- **A new watch starts from a fresh baseline.** When the last watch of a subject ends, kelpie forgets every source's snapshot of it, so watching a repo again days later does not report the releases from in between. This holds for every source. A daemon restart is still a fresh baseline too, so a release published between the last poll before a restart and the first one after it is missed.
 
 ### Reminders: prompt an agent at a time
 
