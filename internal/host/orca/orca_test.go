@@ -123,18 +123,45 @@ func TestCallerWorktree(t *testing.T) {
 	}
 }
 
-// fake writes an orca stand-in that answers worktree ps and terminal list
-// with fixed JSON, answers orchestration send with send, and records the
-// arguments of each send in a file next to it.
-func fake(t *testing.T, state, send string) (*Orca, string) {
+// A worktree runs an agent when ps lists one, a chat included, or when
+// Orca names one in a live terminal that no hook reports.
+func TestWorkspacesAgent(t *testing.T) {
+	o, _ := fake(t,
+		`{"worktreeId":"r::/chat","path":"/chat","agents":[{"paneKey":"structured-agent-session-s1:leaf","state":"idle"}]},`+
+			`{"worktreeId":"r::/hookless","path":"/hookless"},`+
+			`{"worktreeId":"r::/shell","path":"/shell"}`,
+		`{"handle":"t1","worktreeId":"r::/hookless","writable":true,"agentIdentity":"cursor"},`+
+			`{"handle":"t2","worktreeId":"r::/shell","writable":true,"agentIdentity":null},`+
+			`{"handle":"t3","worktreeId":"r::/shell","orphaned":true,"agentIdentity":"claude"}`,
+		"")
+	list, err := o.Workspaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"orca:r::/chat": true, "orca:r::/hookless": true, "orca:r::/shell": false}
+	if len(list) != len(want) {
+		t.Fatalf("listed %+v; want %d workspaces", list, len(want))
+	}
+	for _, ws := range list {
+		if ws.Agent != want[ws.ID] {
+			t.Errorf("%s: Agent = %v; want %v", ws.ID, ws.Agent, want[ws.ID])
+		}
+	}
+}
+
+// fake writes an orca stand-in whose runtime is ready, that answers
+// worktree ps with worktrees and terminal list with terminals (JSON
+// objects, comma-separated), answers orchestration send with send, and
+// records the arguments of each send in a file next to it.
+func fake(t *testing.T, worktrees, terminals, send string) (*Orca, string) {
 	t.Helper()
 	dir := t.TempDir()
 	log := filepath.Join(dir, "sends")
-	ps := `{"ok":true,"result":{"worktrees":[{"worktreeId":"r::/src","path":"/src","agents":[{"paneKey":"structured-agent-session-s1:leaf","state":"` + state + `","updatedAt":5}]}]}}`
 	script := `#!/bin/sh
 case "$1 $2" in
-"worktree ps") echo '` + ps + `' ;;
-"terminal list") echo '{"ok":true,"result":{"terminals":[]}}' ;;
+"status --json") echo '{"ok":true,"result":{"runtime":{"state":"ready"}}}' ;;
+"worktree ps") echo '{"ok":true,"result":{"worktrees":[` + worktrees + `]}}' ;;
+"terminal list") echo '{"ok":true,"result":{"terminals":[` + terminals + `]}}' ;;
 "orchestration send")
 	if [ -n "$ORCA_AGENT_SESSION_ID$ORCA_AGENT_SESSION_SPAWN_TOKEN$ORCA_TERMINAL_HANDLE" ]; then echo '{"ok":false,"error":{"code":"consumer_fenced"}}'; exit 1; fi
 	printf '%s\n' "$*" >> '` + log + `'; echo '` + send + `'; exit 1 ;;
@@ -177,7 +204,7 @@ func TestDeliverChat(t *testing.T) {
 		{name: "other failures are never resent", state: "idle", send: timeout, sent: true, want: host.ErrUnconfirmed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			o, log := fake(t, tc.state, tc.send)
+			o, log := fake(t, `{"worktreeId":"r::/src","path":"/src","agents":[{"paneKey":"structured-agent-session-s1:leaf","state":"`+tc.state+`","updatedAt":5}]}`, "", tc.send)
 			err := o.Deliver(context.Background(), ws, "[kelpie] hello")
 			switch {
 			case tc.want == nil && err != nil,
