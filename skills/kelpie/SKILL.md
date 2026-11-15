@@ -33,7 +33,7 @@ kelpie reports the first failed job while others still run, and the end of the r
 
 ## Watch a Linear issue
 
-When the user links or names a Linear issue to work on (`ENG-123` or a `linear.app/.../issue/ENG-123/...` URL), offer a watch the same way as for a GitHub issue: the same `$HERDR_PANE_ID`, `$HC_TERMINAL_ID` or `$ORCA_WORKTREE_ID`, `kelpie status` (`linear:ENG-123`), ask-once and "daemon is not running" rules apply.
+When the user links or names a Linear issue to work on (`ENG-123` or a `linear.app/.../issue/ENG-123/...` URL), offer a watch the same way as for a GitHub issue: the same `$HERDR_PANE_ID`, `$HC_TERMINAL_ID`, `$ORCA_WORKTREE_ID` or `$ORCA_AGENT_SESSION_ID`, `kelpie status` (`linear:ENG-123`), ask-once and "daemon is not running" rules apply.
 
 Run `kelpie watch linear <ID or URL>`. Done when it prints `watching linear:ENG-123`. If it says `no linear credential; run kelpie auth login linear`, tell the user to run `kelpie auth login linear` themselves and paste a Linear personal API key with Read permission. Never handle the key yourself. An issue that is already completed or canceled is refused: tell the user.
 
