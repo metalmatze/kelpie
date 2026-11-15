@@ -3,6 +3,7 @@ package bind
 import (
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -15,9 +16,10 @@ import (
 
 // Binder resolves an event's subject to the workspace that owns the work.
 type Binder struct {
-	state  state.State
-	branch bool
-	now    func() time.Time
+	state        state.State
+	branch       bool
+	LinearBranch bool
+	now          func() time.Time
 
 	mu         sync.Mutex
 	workspaces map[string]host.Workspace
@@ -163,7 +165,11 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		}
 		b.state.DeleteBinding(ev.Subject, bd.Workspace)
 	}
-	if len(targets) > 0 || !b.branch {
+	enabled := b.branch
+	if linearID(ev.Subject) != "" {
+		enabled = b.LinearBranch
+	}
+	if len(targets) > 0 || !enabled {
 		return targets
 	}
 
@@ -172,6 +178,13 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		if matchesBranch(ws, ev) {
 			candidates = append(candidates, ws)
 		}
+	}
+	// A worktree often has a shell pane next to its agent. Two agents on
+	// one branch stay ambiguous: either could own the work. So does a
+	// candidate whose host cannot tell, as it may run the other agent.
+	blind := slices.ContainsFunc(candidates, func(ws host.Workspace) bool { return !host.ReportsAgent(ws.Host) })
+	if agents := slices.DeleteFunc(slices.Clone(candidates), func(ws host.Workspace) bool { return !ws.Agent }); len(agents) == 1 && !blind {
+		candidates = agents
 	}
 	switch len(candidates) {
 	case 1:
@@ -206,6 +219,9 @@ func (b *Binder) Bindings(s core.Subject) []core.Binding { return b.state.Bindin
 func (b *Binder) AllBindings() []core.Binding { return b.state.AllBindings() }
 
 func matchesBranch(ws host.Workspace, ev core.Event) bool {
+	if id := linearID(ev.Subject); id != "" {
+		return linearBranch(id).MatchString(ws.Branch)
+	}
 	branch := ev.Bind["branch"]
 	if branch == "" || ws.Branch != branch {
 		return false
@@ -216,6 +232,21 @@ func matchesBranch(ws host.Workspace, ev core.Event) bool {
 		}
 	}
 	return false
+}
+
+func linearID(s core.Subject) string {
+	id, ok := strings.CutPrefix(string(s), "linear:")
+	if !ok {
+		return ""
+	}
+	return id
+}
+
+// linearBranch matches a branch naming the issue as a whole word, in any
+// case: eng-123-fix-auth and user/ENG-123, but not eng-1234 or xeng-123. No
+// repo check, unlike PRs: a Linear issue belongs to no repo.
+func linearBranch(id string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:^|[^a-z0-9])` + regexp.QuoteMeta(id) + `(?:$|[^0-9])`)
 }
 
 // unlisted stands in for a workspace whose host has not listed it yet. The

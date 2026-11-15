@@ -303,7 +303,11 @@ func writeItem(b *strings.Builder, it item) {
 	if it.isNew {
 		switch it.bd.Via {
 		case "branch":
-			fmt.Fprintf(b, "  (bound to this workspace by branch %s)\n", it.ev.Bind["branch"])
+			if br := it.ev.Bind["branch"]; br != "" {
+				fmt.Fprintf(b, "  (bound to this workspace by branch %s)\n", br)
+			} else {
+				fmt.Fprintf(b, "  (bound to this workspace because its branch names %s)\n", strings.TrimPrefix(string(it.ev.Subject), "linear:"))
+			}
 		default:
 			fmt.Fprintf(b, "  (bound to this workspace via %s)\n", it.bd.Via)
 		}

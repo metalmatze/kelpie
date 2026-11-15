@@ -39,6 +39,23 @@ func TestBranchBinding(t *testing.T) {
 	if got := b.Resolve(pr); got != nil {
 		t.Fatal("ambiguous match bound")
 	}
+	// An agent's pane and a shell pane: the agent's. Two agents: still nobody.
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+		{Host: "herdr", ID: "w3:p1", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+	})
+	if got := b.Resolve(pr); len(got) != 1 || got[0].Workspace.ID != "w3:p1" || !got[0].New {
+		t.Fatalf("agent pane not preferred: %+v", got)
+	}
+	b.Unbind(pr.Subject, "w3:p1")
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+		{Host: "herdr", ID: "w3:p1", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+		{Host: "herdr", ID: "w4:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+	})
+	if got := b.Resolve(pr); got != nil {
+		t.Fatalf("two agents bound: %+v", got)
+	}
 
 	// Closing the workspace ends the binding.
 	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Repos: []string{"acme/api"}, Branch: "fix-auth"}})
@@ -152,5 +169,64 @@ func TestMoveToSameID(t *testing.T) {
 	b.Move("w1:p1", host.Workspace{Host: "herdr", ID: "w1:p1"})
 	if _, ok := st.Binding(sub, "w1:p1"); !ok {
 		t.Fatal("binding lost by a move to the same ID")
+	}
+}
+
+// A Linear issue binds to the one workspace whose branch names it, in any
+// repo, and only with LinearBranch on.
+func TestLinearBranchBinding(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"},
+		{Host: "herdr", ID: "w2:p1", Branch: "eng-1234-other"},
+		{Host: "herdr", ID: "w3:p1", Branch: "main"},
+	})
+	ev := core.Event{Subject: "linear:ENG-123"}
+	if got := b.Resolve(ev); got != nil {
+		t.Fatalf("bound with LinearBranch off: %+v", got)
+	}
+	b.LinearBranch = true
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p1" || !got[0].New || got[0].Binding.Via != "branch" {
+		t.Fatalf("resolve: %+v", got)
+	}
+	// PRs still need binders.branch.
+	if got := b.Resolve(core.Event{Subject: "github:acme/api#1", Bind: map[string]string{"repo": "acme/api", "branch": "main"}}); got != nil {
+		t.Fatalf("PR bound by LinearBranch: %+v", got)
+	}
+	// The same tie-break as for PRs: the agent's pane, not the shell next to it.
+	b.SetWorkspaces("herdr", []host.Workspace{
+		{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"},
+		{Host: "herdr", ID: "w1:p2", Branch: "matthias/eng-123-fix-auth", Agent: true},
+	})
+	b.Unbind(ev.Subject, "w1:p1")
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p2" {
+		t.Fatalf("agent pane not preferred for a Linear issue: %+v", got)
+	}
+	// hc cannot tell whether its terminal runs an agent, so herdr's agent
+	// does not beat it: ambiguous, until one of them leaves the branch.
+	b.Unbind(ev.Subject, "w1:p2")
+	b.SetWorkspaces("hc", []host.Workspace{{Host: "hc", ID: "hc:t1", Branch: "matthias/eng-123-fix-auth"}})
+	if got := b.Resolve(ev); got != nil {
+		t.Fatalf("herdr agent won over an hc terminal: %+v", got)
+	}
+	b.SetWorkspaces("herdr", nil)
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "hc:t1" {
+		t.Fatalf("hc terminal alone on the branch: %+v", got)
+	}
+	b.SetWorkspaces("hc", nil)
+	// binders.branch alone does not turn the Linear binder on.
+	b2 := New(state.NewMemory(), true)
+	b2.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"}})
+	if got := b2.Resolve(ev); got != nil {
+		t.Fatalf("bound by binders.branch with LinearBranch off: %+v", got)
+	}
+	for branch, want := range map[string]bool{
+		"eng-123": true, "ENG-123-x": true, "u/eng-123": true, "feature_eng-123_x": true,
+		"eng-1234": false, "xeng-123": false, "eng-12": false, "": false,
+	} {
+		if got := linearBranch("ENG-123").MatchString(branch); got != want {
+			t.Errorf("branch %q matches ENG-123: %v, want %v", branch, got, want)
+		}
 	}
 }

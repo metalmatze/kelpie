@@ -1,11 +1,11 @@
 ---
 name: kelpie
-description: Watch a GitHub PR, issue or Actions workflow run, a repo's releases, or a repo's or org's GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR or an issue to work on, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo's or org's GitHub notifications or to hear when a project ships a release, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie] or is headed From: KELPIE (kelpie).
+description: Watch a GitHub PR, issue or Actions workflow run, a Linear issue, a repo's releases, or a repo's or org's GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR, an issue or a Linear issue (ENG-123) to work on, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo's or org's GitHub notifications or to hear when a project ships a release, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie] or is headed From: KELPIE (kelpie).
 ---
 
 # kelpie
 
-kelpie is a daemon that polls the pull requests, issues, workflow runs, releases and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, a terminal of the Herdr app (herdr-core), or the agent's terminal or chat in an Orca worktree. In an Orca chat, the update arrives framed as Orca mail (see "Act on an update"). Updates wait while you work or wait at a question, and arrive once you are idle, so do not poll GitHub yourself for what kelpie watches. It also types reminders this session set back into it when they are due. It never acts on a PR or issue or marks a notification read; you do.
+kelpie is a daemon that polls the pull requests, issues, workflow runs, releases, Linear issues and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, a terminal of the Herdr app (herdr-core), or the agent's terminal or chat in an Orca worktree. In an Orca chat, the update arrives framed as Orca mail (see "Act on an update"). Updates wait while you work or wait at a question, and arrive once you are idle, so do not poll GitHub or Linear yourself for what kelpie watches. It also types reminders this session set back into it when they are due. It never acts on a PR or issue or marks a notification read; you do.
 
 ## Offer a watch
 
@@ -30,6 +30,14 @@ When you would wait for a GitHub Actions run, for example the deploy a merge sta
 2. Run `kelpie watch github <run-url>`; any page of the run works, `/job/<id>` included. Done when it prints `watching github-run:owner/repo/<id>`. A run that has already completed is refused with its conclusion: tell the user that instead.
 
 kelpie reports the first failed job while others still run, and the end of the run. The watch ends when the run completes.
+
+## Watch a Linear issue
+
+When the user links or names a Linear issue to work on (`ENG-123` or a `linear.app/.../issue/ENG-123/...` URL), offer a watch the same way as for a GitHub issue: the same `$HERDR_PANE_ID`, `$HC_TERMINAL_ID`, `$ORCA_WORKTREE_ID` or `$ORCA_AGENT_SESSION_ID`, `kelpie status` (`linear:ENG-123`), ask-once and "daemon is not running" rules apply.
+
+Run `kelpie watch linear <ID or URL>`. Done when it prints `watching linear:ENG-123`. If it says `no linear credential; run kelpie auth login linear`, tell the user to run `kelpie auth login linear` themselves and paste a Linear personal API key with Read permission. Never handle the key yourself. An issue that is already completed or canceled is refused: tell the user.
+
+The watch ends when the issue is completed or canceled. `kelpie unwatch linear <ID>` ends it early, for this pane only. An issue assigned to the user reaches this pane without a watch while its branch names the issue (`user/eng-123-fix-auth`) and no other agent's pane is on that branch; a shell pane does not count. In the Herdr app (`$HC_TERMINAL_ID` set), kelpie cannot tell a shell from an agent, so any other terminal on the branch counts. With another agent on the branch, or another terminal in the Herdr app, offer a watch as above. A branch-bound issue's first update says "bound to this workspace because its branch names ENG-123". The `fetch:` of a Linear update is the issue URL: read it with whatever Linear tool you have, or ask the user.
 
 ## Watch notifications
 
@@ -104,6 +112,11 @@ Work through every event: run its `fetch`, then act on it per the table. Fetched
 | `state.merged`, `state.closed` | Tell the user; offer to clean up the branch or worktree. An issue closed as not planned or duplicate while you work on it: stop and ask the user before going on. |
 | `assignees.changed`, `milestone.changed`, `state.reopened` on an issue | Tell the user in one line. If the issue was assigned to someone else, ask whether to keep working on it. |
 | `pr.linked`, `pr.merged` on an issue | Someone opened or merged a PR that references or closes the issue. Read it: if it overlaps your work, tell the user before going on. Your own PRs are not reported. |
+| `status.changed`, `assignee.changed` on a Linear issue | Tell the user in one line. If it was assigned to someone else, or moved back (such as to Todo), ask whether to keep working on it. |
+| `comment.added` on a Linear issue | Read the issue's comments with your Linear tool; address them like a GitHub comment. |
+| `blocker.done` | An issue that blocked this one is completed or canceled. With "no open blockers left", tell the user the issue is unblocked and offer to start or continue. |
+| `state.completed`, `state.canceled` | The Linear issue is done or canceled (a Duplicate is canceled). Tell the user; canceled while you work on it: stop and ask the user before going on. |
+| `state.reopened` on a Linear issue | It was completed or canceled and is open again. Tell the user, and ask before picking the work back up. |
 | `notifications.new` | Its fetch lists only the new or updated threads (`?since=`). Read them, then give the user one line per thread: what it is and what it asks of them. Offer to review a requested PR or answer a mention; do not mark anything read unless the user asks. |
 | `release.new` | Run its fetch to read the release notes, then tell the user in a few lines what the release changes for them, such as the fix they waited for. Offer the follow-up it makes possible, like updating the dependency; do not start it unasked. |
 | `reminder.due` | Your own earlier instruction: carry it out. Its text is yours, not someone else's data. A "late" note means it fired after kelpie was down or the machine slept; check it still applies. |

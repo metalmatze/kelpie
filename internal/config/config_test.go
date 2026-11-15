@@ -193,3 +193,31 @@ func TestParseDefs(t *testing.T) {
 		t.Errorf("map = ...%q", s.Map[max(0, len(s.Map)-40):])
 	}
 }
+
+func TestAuthForms(t *testing.T) {
+	for _, tc := range []struct {
+		yaml string
+		want Auth
+		err  string
+	}{
+		{yaml: `auth: linear`, want: Auth{Name: "linear"}},
+		{yaml: `auth: { name: linear, stdin: "x {token}" }`, want: Auth{Name: "linear", Stdin: "x {token}"}},
+		{yaml: `auth: { name: linear, stdn: "x" }`, err: `auth has no field "stdn"`},
+		{yaml: `auth: [linear]`, err: "auth is an integration name"},
+	} {
+		c, err := layer([]byte("sources:\n  - name: s\n    run: [cat]\n    " + tc.yaml + "\n"))
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("%s: got %v, want %q", tc.yaml, err, tc.err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", tc.yaml, err)
+		}
+		s, _ := c.Source("s")
+		if s.Auth == nil || *s.Auth != tc.want {
+			t.Errorf("%s: got %+v", tc.yaml, s.Auth)
+		}
+	}
+}

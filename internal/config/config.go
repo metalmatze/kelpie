@@ -115,6 +115,10 @@ type Rules struct {
 
 type Binders struct {
 	Branch bool `yaml:"branch"`
+	// Linear binds linear:ENG-123 to the one workspace on a branch naming
+	// the issue, like eng-123-fix-auth, or to the one of several that runs
+	// an agent.
+	Linear bool `yaml:"linear"`
 }
 
 // omitempty here only keeps kelpie config show to what a source sets.
@@ -128,12 +132,23 @@ type Source struct {
 	ForEach *ForEach `yaml:"for_each,omitempty"`
 	Run     []string `yaml:"run,omitempty"`
 	Stdin   string   `yaml:"stdin,omitempty"`
+	Auth    *Auth    `yaml:"auth,omitempty"`
 	Slurp   bool     `yaml:"slurp,omitempty"` // join multiple JSON documents (gh --paginate) into one array
 	// Conditional polls a REST endpoint through gh api with If-Modified-Since
 	// set to the last Last-Modified. A 304 means no change and costs no rate
 	// limit, and GitHub's X-Poll-Interval raises every. Needs run: [gh, api,
 	// ...] without --paginate, because gh would send the header for every page.
-	Conditional bool         `yaml:"conditional,omitempty"`
+	Conditional bool `yaml:"conditional,omitempty"`
+	// ForgetMissing drops the snapshot of a subject a poll no longer
+	// returns, for a list that a subject leaves for good, like issues
+	// assigned to you: one that comes back is new, not one stale update of
+	// everything since. Off by default, since in a list of current state,
+	// such as series a quiet minute drops, the return is the news.
+	ForgetMissing bool `yaml:"forget_missing,omitempty"`
+	// Page is the most subjects a forget_missing source's command returns,
+	// such as first: 50 in a GraphQL query. A poll that fills it may have
+	// cut off subjects that are still listed, so it forgets none.
+	Page        int          `yaml:"page,omitempty"`
 	Map         string       `yaml:"map,omitempty"`
 	Transitions []Transition `yaml:"transitions,omitempty"`
 	// Badge is a jq expression over the fields giving a short label, shown on
@@ -143,6 +158,44 @@ type Source struct {
 	// makes up front. A non-empty string refuses the watch with that reason,
 	// like a run that has already completed: it would never change again.
 	Refuse string `yaml:"refuse,omitempty"`
+}
+
+// Auth hands the command a credential from kelpie auth on stdin, in place
+// of stdin: in Stdin, {token} becomes the secret, as in
+// 'header = "Authorization: {token}"' for curl -K -. Never an argument,
+// which ps and kelpie's logs would show. The short form `auth: linear`
+// leaves Stdin empty for the integration's own default.
+type Auth struct {
+	Name  string `yaml:"name"`
+	Stdin string `yaml:"stdin,omitempty"`
+}
+
+func (a *Auth) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*a = Auth{Name: n.Value}
+		return nil
+	}
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: auth is an integration name or { name, stdin }", n.Line)
+	}
+	// Node.Decode does not inherit KnownFields, and a typo such as "stdn"
+	// would silently fall back to the default stdin.
+	for i := 0; i < len(n.Content); i += 2 {
+		if k := n.Content[i].Value; k != "name" && k != "stdin" {
+			return fmt.Errorf("line %d: auth has no field %q", n.Content[i].Line, k)
+		}
+	}
+	type plain Auth
+	return n.Decode((*plain)(a))
+}
+
+// MarshalYAML keeps the short form short in kelpie config show.
+func (a Auth) MarshalYAML() (any, error) {
+	if a.Stdin == "" {
+		return a.Name, nil
+	}
+	type plain Auth
+	return plain(a), nil
 }
 
 // ForEach runs a source once per subject instead of once for everything, the

@@ -233,18 +233,47 @@ func (o *Orca) workspaces(ctx context.Context) ([]host.Workspace, []worktree, er
 	if err != nil {
 		return nil, nil, err
 	}
+	named, err := o.agentTerminals(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	out := make([]host.Workspace, len(rows))
 	for i, w := range rows {
-		out[i] = o.workspace(ctx, w)
+		out[i] = o.workspace(ctx, w, named[w.WorktreeID])
 	}
 	return out, rows, nil
+}
+
+// agentTerminals are the worktrees with a live terminal Orca names an
+// agent in. worktree ps lists only agents that report through Orca's
+// hooks, and chats; an agent Orca knows by its process or title alone,
+// which pick still delivers to, is missing there, and counting it as no
+// agent would let another host's agent on the branch take the binding.
+func (o *Orca) agentTerminals(ctx context.Context) (map[string]bool, error) {
+	var resp struct {
+		Terminals []terminal `json:"terminals"`
+		Truncated bool       `json:"truncated"`
+	}
+	if err := o.run(ctx, &resp, "terminal", "list"); err != nil {
+		return nil, err
+	}
+	if resp.Truncated {
+		return nil, errors.New("orca terminal list: list truncated")
+	}
+	named := map[string]bool{}
+	for _, t := range resp.Terminals {
+		if !t.Orphaned && t.AgentIdentity != nil {
+			named[t.WorktreeID] = true
+		}
+	}
+	return named, nil
 }
 
 // workspace takes the branch from Orca, which knows it anyway, and the
 // remotes from git, cached for minutes: a poll lists every worktree, and
 // running git twice for each every 15 s adds up for remotes that hardly
 // ever change.
-func (o *Orca) workspace(ctx context.Context, w worktree) host.Workspace {
+func (o *Orca) workspace(ctx context.Context, w worktree, namedAgent bool) host.Workspace {
 	o.mu.Lock()
 	c, ok := o.repos[w.Path]
 	o.mu.Unlock()
@@ -264,6 +293,7 @@ func (o *Orca) workspace(ctx context.Context, w worktree) host.Workspace {
 		Repos:  c.repos,
 		Branch: strings.TrimPrefix(w.Branch, "refs/heads/"),
 		Path:   w.Path,
+		Agent:  len(w.Agents) > 0 || namedAgent,
 	}
 }
 
@@ -355,6 +385,7 @@ func (o *Orca) State(ctx context.Context, ws host.Workspace) (host.AgentState, e
 
 type terminal struct {
 	Handle        string  `json:"handle"`
+	WorktreeID    string  `json:"worktreeId"`
 	Orphaned      bool    `json:"orphaned"`
 	Writable      bool    `json:"writable"`
 	TabID         string  `json:"tabId"`

@@ -22,6 +22,8 @@ type State interface {
 	// different fields.
 	Snapshot(source string, s core.Subject) (map[string]any, bool)
 	SetSnapshot(source string, s core.Subject, fields map[string]any)
+	// drop runs with the state locked, so it must not call back into it.
+	DeleteSnapshots(source string, drop func(core.Subject, map[string]any) bool)
 
 	// Bindings are per subject and workspace: several workspaces may watch
 	// one subject, and each gets its own delivery.
@@ -132,6 +134,14 @@ func (m *Memory) SetSnapshot(source string, s core.Subject, fields map[string]an
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.snapshots[snapshotKey{source, s}] = fields
+}
+
+func (m *Memory) DeleteSnapshots(source string, drop func(core.Subject, map[string]any) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	maps.DeleteFunc(m.snapshots, func(k snapshotKey, fields map[string]any) bool {
+		return k.source == source && drop(k.subject, fields)
+	})
 }
 
 func (m *Memory) Binding(s core.Subject, workspace string) (core.Binding, bool) {

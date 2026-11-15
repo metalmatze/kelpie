@@ -15,9 +15,21 @@ type Workspace struct {
 	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
 	Branch string
 	Path   string
+	// Agent breaks a tie between workspaces on one branch, so a shell pane
+	// next to the agent does not silence branch binding. It means something
+	// only where ReportsAgent(Host).
+	Agent bool
 }
 
 var prefixed = []string{"orca", "hc"}
+
+// agentHosts set Workspace.Agent. Anywhere else, like hc, whose terminals say
+// nothing about what runs in them, a false Agent is not known rather than a
+// shell, and must not let another host's agent win the branch. A new host is
+// left out until it reports agents, so it keeps ambiguity instead.
+var agentHosts = []string{"herdr", "orca"}
+
+func ReportsAgent(host string) bool { return slices.Contains(agentHosts, host) }
 
 // HostOf names the host a workspace ID belongs to. IDs are unique across
 // hosts so bindings, reminders and delivery queues can key on the ID alone,

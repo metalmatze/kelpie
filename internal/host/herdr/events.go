@@ -124,6 +124,8 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 				Pane           paneInfo `json:"pane"`
 				PaneID         string   `json:"pane_id"`
 				PreviousPaneID string   `json:"previous_pane_id"`
+				Agent          string   `json:"agent"`
+				Released       bool     `json:"released"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(line, &msg); err != nil {
@@ -150,6 +152,9 @@ func (h *Herdr) follow(ctx context.Context, ev host.Events, ids chan []string, c
 			ev.Move(h.Name(), d.PreviousPaneID, h.workspace(ctx, d.Pane))
 			h.publishIDs(ids)
 		case "pane_agent_detected":
+			if ws, ok := h.setAgent(d.PaneID, d.Agent != "" && !d.Released); ok {
+				ev.Upsert(ws)
+			}
 			ev.AgentReady(h.Name(), d.PaneID)
 		case "tab_closed", "workspace_closed":
 			slog.Debug("herdr "+strings.TrimSuffix(msg.Event, "_closed")+" closed, listing panes again", "event", msg.Event)

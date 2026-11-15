@@ -159,3 +159,16 @@ func TestGlob(t *testing.T) {
 		}
 	}
 }
+
+// Sources without GitHub logins, like Linear, report your own changes as
+// "@me"; gh failing to resolve your login must not stop that.
+func TestDropMe(t *testing.T) {
+	for _, me := range []string{"metalmatze", ""} {
+		r := NewRules(config.Rules{IgnoreActors: []string{"@me"}}, me)
+		for actor, want := range map[string]bool{"@me": true, "metalmatze": me != "", "alice": false, "": false} {
+			if _, drop := r.Drop(core.Event{Kind: "comment.added", Actor: actor}); drop != want {
+				t.Errorf("me %q: Drop(actor %q) = %v, want %v", me, actor, drop, want)
+			}
+		}
+	}
+}

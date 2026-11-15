@@ -33,6 +33,11 @@ rules:
 
 binders:
   branch: false         # PRs are watched explicitly with kelpie watch
+  # A Linear issue's updates go to the one pane on a branch naming it, like
+  # user/eng-123-fix-auth. Several such panes: the one running an agent;
+  # several agents, none, or an hc terminal, which cannot tell: nobody,
+  # with a warning. binders.branch too.
+  linear: true
 
 # jq definitions available in every map, summary, actor, fetch and badge.
 defs: |
@@ -49,6 +54,54 @@ defs: |
   # Tags of the full releases of a github-release observation published after
   # $old.latest, newest first.
   def releases_new($old): [.releases[] | select(.published_at > ($old.latest // ""))] | sort_by(.published_at) | reverse | map(.tag);
+
+  # One Linear issue as an observation, for the linear and linear-issue
+  # sources. People are Linear display names, and the key's own user is @me,
+  # so ignore_actors drops your own changes. Someone without a Linear
+  # account (a Slack-synced thread) keeps the name Linear records for them,
+  # since Slack's botActor carries no name of its own; other integrations
+  # and automations are "<name>[bot]". A status or assignee change's actor is
+  # the newest history entry that led to the current state or assignee. The
+  # transitions take it only if that entry is newer than the previous
+  # snapshot's updatedAt, so a change the page does not hold is unknown,
+  # never an older entry by you that would drop it as yours.
+  def linear_who:
+    if .user then (if .user.isMe then "@me" else .user.displayName end)
+    elif .botActor.userDisplayName then .botActor.userDisplayName
+    elif .externalUser then .externalUser.name
+    elif .botActor then "\(.botActor.name // .botActor.type)[bot]"
+    else "" end;
+  def linear_since($old; $at; $who): if $at > ($old.updated_at // "") then $who else "" end;
+  def linear_issue: select(. != null) | . as $i
+    | ([.comments.nodes[] | {at: .createdAt, by: linear_who}] | sort_by(.at)) as $comments
+    | ([.history.nodes[] | select(.toStateId == $i.state.id)] | max_by(.createdAt)) as $moved
+    | ([.history.nodes[] | select(.toAssigneeId == $i.assignee.id and .fromAssigneeId != .toAssigneeId)] | max_by(.createdAt)) as $assigned
+    | [.inverseRelations.nodes[] | select(.type == "blocks") | .issue
+        | {id: .identifier, state: .state.name, done: (.state.type | IN("completed", "canceled"))}] as $blockers
+    | {
+      subject: "linear:\(.identifier)",
+      url: .url,
+      fields: {
+        id: .identifier,
+        updated_at: .updatedAt,
+        status: .state.name,
+        state_type: .state.type,
+        open: (.state.type | IN("completed", "canceled") | not),
+        # Empty once completed or canceled, which status.changed ignores:
+        # state.completed and state.canceled report that.
+        open_status: (if .state.type | IN("completed", "canceled") then "" else .state.name end),
+        status_actor: ($moved | if . then linear_who else "" end),
+        status_at: $moved.createdAt,
+        assignee: (.assignee | if . == null then "" elif .isMe then "@me" else .displayName end),
+        assigner: ($assigned | if . then linear_who else "" end),
+        assigned_at: $assigned.createdAt,
+        comment_at: $comments[-1].at,
+        comments: $comments,
+        blockers: $blockers,
+        blockers_done: ([$blockers[] | select(.done)] | length)
+      },
+      fetch: [.url]
+    };
 
   # Check contexts of a commit, bucketed like gh pr checks, keeping only the
   # newest of re-runs so a check that failed and then passed on re-run is not
@@ -632,3 +685,148 @@ sources:
           releases_new($old) as $new
           | if ($new | length) == 1 then ["gh", "release", "view", $new[0], "-R", .repo]
             else ["gh", "api", "repos/\(.repo)/releases?per_page=30", "--jq", "[.[] | select(.tag_name | IN(\($new | map(tojson) | join(", "))))]"] end
+
+  # Linear issues assigned to you: the open ones, and those closed within a
+  # day, so that completing one is seen. One GraphQL query with curl every
+  # 120 s, about 30 of the 2,500 requests an hour Linear allows a key, a
+  # quota every Linear client of yours shares. Its events reach a workspace
+  # only through a binding; for an issue that kelpie watch linear watches,
+  # linear-issue reports them instead. Without a stored key each poll fails
+  # with "no linear credential; run kelpie auth login linear", logged once.
+  #
+  # Linear charges complexity by the page sizes asked for: these cost
+  # 4,131 of the 10,000 points a query may use, however few issues match.
+  # Linear has no count of comments, so the query takes those of the last
+  # day, all a poll needs, and new ones are those newer than the newest
+  # seen. Past 10 in a day the page decides which are seen. Not covered:
+  # an issue assigned to you or away from you. Assigned away, it drops out
+  # of the list, and forget_missing forgets its snapshot; assigned to you,
+  # it is silent each time it appears. A closed issue keeps its snapshot
+  # after it ages out, so a reopen (state.reopened) still fires. Nor title
+  # and description edits, labels, priority, and blockers added or
+  # removed.
+  - name: linear
+    adapter: cli
+    every: 120s
+    auth: linear
+    forget_missing: true  # an issue that left the list comes back new, not as one stale update
+    page: 50              # first: 50 below; an issue that falls off a full page keeps its snapshot
+    run:
+      - curl
+      - -sSK
+      - "-"
+      - --fail-with-body
+      - --max-time
+      - "60"
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - >-
+        {"variables": {"closed": ["completed", "canceled"], "recent": "-P1D", "commentsSince": "-P1D"},
+        "query": "query($closed: [String!], $recent: DateTimeOrDuration, $commentsSince: DateTimeOrDuration) {
+        viewer { assignedIssues(first: 50, orderBy: updatedAt,
+        filter: { or: [ { state: { type: { nin: $closed } } }, { updatedAt: { gt: $recent } } ] }) { nodes {
+        identifier url updatedAt state { id name type } assignee { id displayName isMe }
+        comments(first: 10, filter: { createdAt: { gt: $commentsSince } }) { nodes { createdAt
+        user { displayName isMe } botActor { name type userDisplayName } externalUser { name } } }
+        history(first: 10) { nodes { createdAt toStateId fromAssigneeId toAssigneeId
+        user: actor { displayName isMe } botActor { name type userDisplayName } } }
+        inverseRelations(first: 10) { nodes { type issue { identifier state { name type } } } }
+        } } } }"}
+      - https://api.linear.app/graphql
+    map: .data.viewer.assignedIssues.nodes[] | linear_issue
+    transitions: &linear_transitions
+      - field: open_status
+        changed: true
+        ignore: [""]
+        kind: status.changed
+        actor: 'linear_since($old; .status_at; .status_actor)'
+        summary: '"\($old.status) → \(.status)" + (linear_since($old; .status_at; .status_actor) | if . != "" then " by \(.)" else "" end)'
+      - field: assignee
+        changed: true
+        kind: assignee.changed
+        actor: 'linear_since($old; .assigned_at; .assigner)'
+        summary: |
+          (if .assignee == "@me" then "assigned to you" elif .assignee == "" then "unassigned" else "assigned to \(.assignee)" end)
+          + (linear_since($old; .assigned_at; .assigner) | if . != "" and . != "@me" then " by \(.)" else "" end)
+      - field: comment_at
+        increased: true
+        kind: comment.added
+        # Several authors have no single actor and always go through, so a
+        # reply of yours does not hide the comment it answers.
+        actor: '[.comments[] | select(.at > ($old.comment_at // "")) | .by] | unique | if length == 1 then .[0] else "" end'
+        summary: |
+          [.comments[] | select(.at > ($old.comment_at // ""))] as $new
+          | "\($new | length) new by \($new | map(.by | if . == "@me" then "you" elif . == "" then "someone" else . end) | unique | join(", "))"
+      # Blockers are issues with a "blocks" relation to this one; done means
+      # completed or canceled, so nothing blocks anymore.
+      - field: blockers_done
+        increased: true
+        kind: blocker.done
+        summary: |
+          ([$old.blockers[]? | select(.done) | .id]) as $seen
+          | [.blockers[] | select(.done and (.id as $id | $seen | index($id) | not))] as $new
+          | ([.blockers[] | select(.done | not)] | length) as $open
+          | "blocker \($new | map("\(.id) is \(.state)") | join(", "))"
+            + (if $open == 0 then "; no open blockers left" else "; \($open) still open" end)
+      # No actor: the watch ends even when you closed the issue yourself.
+      - field: state_type
+        to: completed
+        kind: state.completed
+        urgent: true
+        terminal: true
+        summary: &linear_closed '"\(.status)" + (linear_since($old; .status_at; .status_actor) | if . != "" then " by \(.)" else "" end) + "; kelpie stops watching"'
+      - field: state_type
+        to: canceled
+        kind: state.canceled
+        urgent: true
+        terminal: true
+        summary: *linear_closed
+      # Completing ended the watch or branch binding, so this is how a pane
+      # hears the work is open again. Back in the status it had, nothing
+      # else fires: open_status kept that status while the issue was closed.
+      - field: open
+        to: true
+        kind: state.reopened
+        actor: 'linear_since($old; .status_at; .status_actor)'
+        summary: '"reopened: \($old.status) → \(.status)" + (linear_since($old; .status_at; .status_actor) | if . != "" then " by \(.)" else "" end)'
+
+  # One watched Linear issue: kelpie watch linear <ID or URL>, until it is
+  # completed or canceled (Duplicate is a canceled state) or the pane goes
+  # away. Same shape and transitions as linear, every 60 s like a GitHub
+  # issue, with larger pages since it is one issue. issue(id:) takes the
+  # identifier. The map keeps the subject that was watched, since the
+  # identifier changes when the issue moves to another team.
+  - name: linear-issue
+    adapter: cli
+    every: 60s
+    auth: linear
+    for_each: { subjects: "linear:{id}" }
+    run:
+      - curl
+      - -sSK
+      - "-"
+      - --fail-with-body
+      - --max-time
+      - "60"
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - >-
+        {"variables": {"id": "{id}", "commentsSince": "-P1D"},
+        "query": "query($id: String!, $commentsSince: DateTimeOrDuration) { issue(id: $id) {
+        identifier url updatedAt state { id name type } assignee { id displayName isMe }
+        comments(first: 50, filter: { createdAt: { gt: $commentsSince } }) { nodes { createdAt
+        user { displayName isMe } botActor { name type userDisplayName } externalUser { name } } }
+        history(first: 25) { nodes { createdAt toStateId fromAssigneeId toAssigneeId
+        user: actor { displayName isMe } botActor { name type userDisplayName } } }
+        inverseRelations(first: 25) { nodes { type issue { identifier state { name type } } } }
+        } }"}
+      - https://api.linear.app/graphql
+    map: .data.issue | linear_issue | .subject = $subject
+    refuse: 'if .state_type | IN("completed", "canceled") then "\(.id) is already \(.status)" else "" end'
+    # ENG-123 In Review, ENG-123 In Progress ⛔1 (one open blocker)
+    badge: |
+      "\(.id) \(.status)"
+      + ([.blockers[] | select(.done | not)] | if length > 0 then " ⛔\(length)" else "" end)
+    transitions: *linear_transitions

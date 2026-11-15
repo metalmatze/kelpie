@@ -22,6 +22,26 @@ type Differ struct {
 	// so the first look is news, not a baseline.
 	NewSubjectsFire bool
 
+	// ForgetMissing drops the snapshot of every subject an Observe no longer
+	// holds, so a subject that comes back is a new subject again instead of
+	// being diffed against the state it left in, which would hand the agent
+	// every change since as one stale update. Only a list source that opts
+	// in with forget_missing sets it: there a missing subject has left the
+	// list, while in a list of current state its return is the news. A
+	// for_each Differ is shared by all its parents and each Observe holds
+	// one parent's subjects, so it must not.
+	//
+	// A subject that left closed, at a terminal transition's target, keeps
+	// its snapshot. A list drops closed subjects after a while (linear a day
+	// after the last update) and shows one again with the change that bumped
+	// it, such as a reopen or a comment. The snapshot reports that change
+	// correctly; forgetting it would make the change silent.
+	ForgetMissing bool
+	// Page is the list's page size. Past it the subjects updated longest ago
+	// fall off, and one comes back with the update that bumped it. A full
+	// page forgets nothing, or that update would be silent.
+	Page int
+
 	// mu serializes Observe: a reminder polls a subject once on top of its
 	// watch loop, and two concurrent diffs of one change would both fire.
 	mu        sync.Mutex
@@ -67,10 +87,21 @@ func New(source string, transitions []config.Transition, st state.State) (*Diffe
 // The first call is a baseline and returns nothing, so a restart never floods
 // agents with old news. A subject seen for the first time later on is stored
 // silently too: it has no previous state to transition from.
+//
+// With ForgetMissing, obs must be a whole successful poll: a failed or
+// partial one passed here would forget subjects that are still listed and
+// miss their next change.
 func (d *Differ) Observe(obs []core.Observation) []core.Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var events []core.Event
+	if d.ForgetMissing && (d.Page == 0 || len(obs) < d.Page) {
+		listed := make(map[core.Subject]bool, len(obs))
+		for _, o := range obs {
+			listed[o.Subject] = true
+		}
+		d.state.DeleteSnapshots(d.source, func(s core.Subject, old map[string]any) bool { return !listed[s] && !d.closed(old) })
+	}
 	for _, o := range obs {
 		old, seen := d.state.Snapshot(d.source, o.Subject)
 		d.keepKnown(o.Fields, old)
@@ -86,6 +117,13 @@ func (d *Differ) Observe(obs []core.Observation) []core.Event {
 	}
 	d.baselined = true
 	return events
+}
+
+func (d *Differ) closed(fields map[string]any) bool {
+	return slices.ContainsFunc(d.rules, func(r rule) bool {
+		v, ok := fields[r.Field]
+		return r.Terminal && r.To != nil && ok && equal(v, r.To)
+	})
 }
 
 func (d *Differ) keepKnown(fields, old map[string]any) {

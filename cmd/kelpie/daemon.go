@@ -129,6 +129,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 	d.binder = bind.New(st, cfg.Binders.Branch)
+	d.binder.LinearBranch = cfg.Binders.Linear
 	for _, h := range d.hosts {
 		d.binder.Await(h.Name())
 	}
@@ -196,6 +197,17 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 
 func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 	for _, s := range sources {
+		// Forgetting a missing subject assumes each Observe is one whole poll
+		// of the list: a for_each Observe holds one parent's subjects, and a
+		// streaming adapter would observe one change at a time.
+		switch {
+		case s.ForgetMissing && s.ForEach != nil:
+			return fmt.Errorf("source %s: forget_missing is for a list source; each poll of a for_each source holds one parent's subjects", s.Name)
+		case s.ForgetMissing && s.Adapter != "cli":
+			return fmt.Errorf("source %s: forget_missing needs adapter cli, whose every poll is the whole list", s.Name)
+		case s.Page < 0 || s.Page > 0 && s.ForEach != nil:
+			return fmt.Errorf("source %s: page is the page size of a list source, a for_each source has none", s.Name)
+		}
 		a, err := adapter.New(s)
 		if err != nil {
 			return err
@@ -204,6 +216,11 @@ func (d *daemon) buildRunners(sources []config.Source, st state.State) error {
 		if err != nil {
 			return fmt.Errorf("source %s: %w", s.Name, err)
 		}
+		// The adapter observes only polls that succeeded whole, and only
+		// for_each.subjects runners are polled once on top, so a list
+		// source's Observe always sees its complete list.
+		df.ForgetMissing = s.ForgetMissing
+		df.Page = s.Page
 		r := &runner{s: s, a: a, d: df}
 		if r.badge, err = diff.NewExpr(s.Badge); err != nil {
 			return fmt.Errorf("source %s: badge: %w", s.Name, err)
@@ -250,6 +267,12 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 	return func(obs []core.Observation) {
 		slog.Debug("observed", "source", r.s.Name, "subjects", len(obs))
 		for _, ev := range r.d.Observe(obs) {
+			// An issue both assigned to you and watched would otherwise reach
+			// the agent twice, once from the list and once from its watch.
+			if r.s.ForEach == nil && d.polledOnItsOwn(ev.Subject) {
+				slog.Debug("left to the subject's own watch", "source", r.s.Name, "subject", ev.Subject, "kind", ev.Kind)
+				continue
+			}
 			d.router.Route(ev)
 		}
 		if r.badge != nil {
@@ -278,6 +301,20 @@ func (d *daemon) observer(r *runner) func([]core.Observation) {
 			}
 		}
 	}
+}
+
+// polledOnItsOwn reports whether a for_each.subjects source runs a loop for
+// subject. That loop is the subject's source of events: it polls just this
+// subject, usually more often than a list does, and its terminal event ends
+// the watch. A binding alone is not enough: one by branch starts no loop, and
+// the list is all that reports on it.
+func (d *daemon) polledOnItsOwn(subject core.Subject) bool {
+	for _, r := range d.runners {
+		if r.pattern != nil && r.a.Watching(subject) {
+			return true
+		}
+	}
+	return false
 }
 
 // startWatches starts every for_each.subjects source that handles subject,

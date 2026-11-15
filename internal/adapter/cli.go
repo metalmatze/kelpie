@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metalmatze/kelpie/internal/auth"
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
@@ -29,6 +30,8 @@ import (
 type CLI struct {
 	source config.Source
 	mapper *diff.Mapper
+	// credential is auth.Get, swapped out by tests.
+	credential func(ctx context.Context, integration string) (string, error)
 
 	mu       sync.Mutex
 	watching map[core.Subject]bool
@@ -44,11 +47,28 @@ func New(s config.Source) (*CLI, error) {
 	if s.Conditional && (len(s.Run) < 3 || s.Run[0] != "gh" || s.Run[1] != "api" || slices.Contains(s.Run, "--paginate")) {
 		return nil, fmt.Errorf("source %s: conditional needs run: [gh, api, <endpoint>, ...] without --paginate", s.Name)
 	}
+	if s.Auth != nil {
+		// A copy, so the default stdin does not leak into the shared config.
+		a := *s.Auth
+		in, known := auth.Lookup(a.Name)
+		a.Stdin = cmp.Or(a.Stdin, in.Stdin)
+		s.Auth = &a
+		switch {
+		case a.Name == "":
+			return nil, fmt.Errorf("source %s: auth needs a name, one of %s", s.Name, strings.Join(auth.Names(), ", "))
+		case !known:
+			return nil, fmt.Errorf("source %s: auth %q is not an integration kelpie holds credentials for; one of %s", s.Name, a.Name, strings.Join(auth.Names(), ", "))
+		case !strings.Contains(a.Stdin, "{token}"):
+			return nil, fmt.Errorf("source %s: auth stdin needs {token}, or the credential never reaches the command", s.Name)
+		case s.Stdin != "":
+			return nil, fmt.Errorf("source %s: auth stdin replaces stdin; set only one", s.Name)
+		}
+	}
 	m, err := diff.NewMapper(s.Map, s.Slurp)
 	if err != nil {
 		return nil, fmt.Errorf("source %s: %w", s.Name, err)
 	}
-	return &CLI{source: s, mapper: m, watching: map[core.Subject]bool{}}, nil
+	return &CLI{source: s, mapper: m, credential: auth.Get, watching: map[core.Subject]bool{}}, nil
 }
 
 func (c *CLI) Run(ctx context.Context, observe func([]core.Observation), _ func(core.Event)) error {
@@ -78,6 +98,14 @@ func (c *CLI) Watch(ctx context.Context, parent core.Observation, observe func([
 	}()
 }
 
+// Watching asks the runner, not the bindings: a branch binding starts no
+// for_each loop, so a bound subject may still be polled only by a list.
+func (c *CLI) Watching(subject core.Subject) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.watching[subject]
+}
+
 // loop polls until ctx ends or keep returns false. A conditional source sends
 // the Last-Modified of its last observed response along; on a 304 nothing is
 // observed and keep sees the previous observations, since nothing changed.
@@ -87,8 +115,9 @@ func (c *CLI) loop(ctx context.Context, parent *core.Observation, observe func([
 		log = log.With("subject", parent.Subject)
 	}
 	var (
-		last  []core.Observation
-		since string
+		last    []core.Observation
+		since   string
+		lastErr string
 	)
 	for {
 		p, err := c.poll(ctx, parent, since)
@@ -96,9 +125,23 @@ func (c *CLI) loop(ctx context.Context, parent *core.Observation, observe func([
 			return
 		}
 		obs := p.obs
+		// A failure that repeats, such as a default source with no
+		// credential stored, is logged once, not every poll.
+		msg := ""
+		if err != nil {
+			msg = err.Error()
+		}
+		switch {
+		case err != nil && msg != lastErr:
+			log.Warn("poll failed", "err", err)
+		case err != nil:
+			log.Debug("poll failed again", "err", err)
+		case lastErr != "":
+			log.Info("poll works again")
+		}
+		lastErr = msg
 		switch {
 		case err != nil:
-			log.Warn("poll failed", "err", err)
 		case p.notModified:
 			log.Debug("not modified", "since", since)
 			obs = last
@@ -154,6 +197,17 @@ func (c *CLI) poll(ctx context.Context, parent *core.Observation, since string) 
 	if c.source.Stdin != "" {
 		cmd.Stdin = strings.NewReader(c.source.Stdin)
 	}
+	if a := c.source.Auth; a != nil {
+		// Read on every poll, so a login or a rotated key applies without
+		// restarting the daemon.
+		token, err := c.credential(ctx, a.Name)
+		if errors.Is(err, auth.ErrNotStored) {
+			return poll{}, fmt.Errorf("no %s credential; run kelpie auth login %s", a.Name, a.Name)
+		} else if err != nil {
+			return poll{}, fmt.Errorf("%s credential: %w", a.Name, err)
+		}
+		cmd.Stdin = strings.NewReader(strings.ReplaceAll(a.Stdin, "{token}", token))
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
@@ -179,6 +233,11 @@ func (c *CLI) poll(ctx context.Context, parent *core.Observation, since string) 
 		}
 	}
 	if runErr != nil {
+		// curl --fail-with-body keeps a GraphQL API's answer to a 400, which
+		// says why, such as a revoked key; stderr only has the status.
+		if gqlErr := graphqlErrors(p.raw); gqlErr != nil {
+			return p, fmt.Errorf("%s: %w: %v", args[0], runErr, gqlErr)
+		}
 		return p, fmt.Errorf("%s: %w: %s", args[0], runErr, strings.TrimSpace(stderr.String()))
 	}
 	obs, err := c.mapper.Map(p.raw, parent)
