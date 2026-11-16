@@ -565,6 +565,49 @@ A command rather than documented steps because neither supervisor sees the login
 
 **Testing.** Every source has recorded raw outputs (`testdata/`) and fake hosts. `go test ./...` covers diffing, binders, rules and delivery end to end without the network.
 
+## Integration binaries (proposal)
+
+Each integration becomes its own binary in `cmd/` (`cmd/kelpie-github`, `cmd/kelpie-linear`), registered in the config and talking to kelpie only through its command line and stdout. They stay in this repo for now and can move to their own repos when one needs its own releases or owners.
+
+**Why.** There are five integrations today; once kelpie is open source, there will be many more. Each one now adds Go in several places: a `kelpie watch <provider>` subcommand, target parsing in `internal/core/subject.go`, sometimes a binder (Linear's branch match in `internal/bind`) and an auth `Integration`. Merging all of them that way and refactoring later costs more with each one that lands. Alertmanager took every receiver in-tree and later stopped accepting new ones; Prometheus added `file_sd` and `http_sd` so service discovery could live out of tree. kelpie defines the boundary while it is small.
+
+**The rule: process boundary only.** A provider binary imports nothing from `internal/`. Go refuses `internal/` imports from another module, so a binary that used `internal/core` could not move out without a rewrite. Shared shapes (subject, source entry) are JSON and YAML on stdout; a binary that wants Go types for them copies them or uses a small public `pkg/`.
+
+**Two subcommands.**
+- `describe` prints what kelpie needs to run the integration, in the existing source schema: the provider name, its `sources:` entries (`run`, `map`, `transitions`, `for_each`, `badge`, `refuse`, `auth`), its credential if any (name, login prompt, the stdin line, and a `verify` command that reads the token on stdin and prints who it belongs to), and branch patterns for the branch binder (a regex whose match names the subject, as `eng-123` names `linear:ENG-123`). The YAML is embedded in the binary, so it cannot drift from the code that parses targets.
+- `subject <args>` turns a watch target into subjects, one per line, or exits 1 with the reason for refusing on stderr. `kelpie watch <provider> <args>` runs it in the agent's shell, so it sees the agent's cwd and environment. This is the part that needs code: `kelpie watch github` with no target runs `gh repo view`, and an owner needs `gh api users/<owner>` to tell an org from a user.
+
+**The daemon keeps everything else.** Polling runs the `run` steps that `describe` returned, through the `cli` adapter as today; the binary is not called per poll. Snapshots, transitions, rules, debounce, retries and delivery stay in kelpie, so a provider is stateless and a few hundred lines. The keychain stays in kelpie too: the token goes to the source's `run` command on stdin, as `auth: linear` does today, and to `verify` at `kelpie auth login`.
+
+**Explicit registration.** No discovery of `kelpie-*` on PATH:
+
+```yaml
+providers:
+  github: { command: [kelpie-github] }
+  linear: { command: [/home/me/bin/kelpie-linear] }
+```
+
+The daemon runs each provider's `describe` at startup and layers its sources under the user's config, the way the built-in default is layered today, so a config entry with the same name overrides a provider's source. `kelpie config show` prints what each provider contributed, and a provider whose `describe` fails is logged and skipped, not fatal. `kelpie watch <provider> …` and `unwatch <provider> …` become generic and replace the per-provider kong subcommands.
+
+**Order.**
+1. The generic parts in kelpie: `providers:`, `describe` loading and layering, the generic `watch`/`unwatch`, branch patterns, and a `verify` command for credentials.
+2. `kelpie-linear`: the most self-contained integration, and new, so the fewest people depend on its current form. Linear's Go in `subject.go`, `bind.go` and `auth` goes away.
+3. New integrations, Kubernetes the first, start as providers.
+4. `kelpie-github` last: the skill, the herdr plugin's ctrl-click and the PR branch binder lean on it most. Until then GitHub stays in `default.yaml`.
+
+**Install.** The flake and `go build ./cmd/...` build all binaries together; each machine lists the ones it uses under `providers:`.
+
+**Not chosen.**
+- *Every integration built in, refactor later:* the Go per integration grows with each one, see Why.
+- *Integrations as YAML files only*, with target parsing as a regex: cheaper, but a regex cannot run `gh repo view` or ask GitHub whether an owner is an org, and a YAML file cannot be released and versioned on its own.
+- *The binary polls (`observe`)* and prints observations: every provider would then need its own loop, timeouts and error reporting, which the `cli` adapter already has. It stays possible as a later subcommand for a provider whose data is a stream, not a poll, once `cli-watch` exists.
+
+**Open.**
+- How `describe` output is versioned, so kelpie can refuse a provider built for a newer schema.
+- Timeouts for `describe` and `subject`, and whether `subject` may prompt.
+- Which provider gets a bare URL: the herdr plugin's ctrl-click and `kelpie watch <url>` without a provider would ask each registered provider's `subject` in turn, or match URL patterns from `describe`.
+- Whether `default.yaml` keeps GitHub after `kelpie-github` exists, so a fresh install works with no `providers:` entry.
+
 ## Repo layout
 
 ```text
