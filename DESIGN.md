@@ -12,7 +12,7 @@ kelpie is one Go daemon that turns SDLC events (GitHub, Slack threads, Linear, d
 - Watch on request. When a PR or an issue comes up in a conversation, the agent asks whether to watch it (the `kelpie` skill) and runs `kelpie watch github <url>` in its pane. The same goes for a repo's or org's GitHub notifications (`kelpie watch github <owner/repo or org>`). kelpie polls only watched subjects, never everything you authored.
 - Follow up later on request. "Check the PR again tomorrow at 10" or "try again in an hour" becomes `kelpie remind`, and kelpie prompts the same agent when it is due, once or on a cron schedule.
 - Report everything that happens on a watched PR: checks, reviews, comments, pushes by others, title, description, base, labels, review requests, draft state, conflicts, merge.
-- Bind other work to workspaces automatically where a rule is unambiguous (Linear ID, k8s namespace); confirm only fuzzy matches.
+- Bind other work to workspaces automatically where a rule is unambiguous (Linear ID, Kubernetes namespace); confirm only fuzzy matches.
 - **Wrap, never reimplement.** A source runs the vendor's CLI where one exists (`gh`, `kubectl`, `argocd`) and inherits its auth. Where none does (Linear, Slack), it calls the vendor's HTTP API with `curl` and a credential kelpie holds itself (see Authentication). No vendor SDKs.
 - **Agent-agnostic.** Nothing depends on one agent's MCP config, connectors or login, and no source runs an agent, so Claude Code, Codex or any agent a host runs gets the same updates.
 - Make a new source a config entry: a command, a jq mapping, and transition rules.
@@ -44,7 +44,7 @@ Core types:
 ```go
 // Subject is a stable URI for a watched thing.
 // github:org/repo#421, github-issue:org/repo#17, linear:ENG-123, slack:C0123ABCD/1761811234.567890,
-// k8s:kind-dev/dev-eng-123/deploy/api
+// kubernetes:kind-dev/dev-eng-123/deploy/api
 type Subject string
 
 // Observation is the current state of one subject, as a CLI or API reports it.
@@ -69,7 +69,7 @@ type Event struct {
 type Binding struct {
     Subject   Subject
     Workspace string // stable workspace ID from the host
-    Via       string // branch | link | k8s | explicit | confirmed
+    Via       string // branch | link | kubernetes | explicit | confirmed
     Since     time.Time
 }
 
@@ -342,11 +342,11 @@ Binders turn an event's subject into the workspaces that watch it. They run in o
 1. **Explicit:** `kelpie watch <provider> <target>` from inside a workspace (herdr: `$HERDR_PANE_ID`; Orca: `$ORCA_WORKTREE_ID`, or in a chat the worktree of `$ORCA_AGENT_SESSION_ID`; when both are set, the host `$TERM_PROGRAM` names wins, else Orca's), or `--workspace <id as kelpie status lists it>`. Always confident. Watching from a second workspace adds a binding instead of moving the first.
 2. **Branch:** kelpie keeps a workspace -> repo + branch map, refreshed on host events. A PR whose head equals that branch binds. A Linear ID in the branch name (`eng-123-fix-auth`) binds `linear:ENG-123` (`binders.linear`, on by default; PRs need `binders.branch`, off by default). When several workspaces are on the branch, the one running an agent wins, since a worktree often has a shell pane next to its agent. Several agents on one branch, or several workspaces and no agent, are ambiguous: nothing is delivered, and the daemon logs a warning until the confirmation queue exists. herdr names each pane's agent in `pane list` and in `pane.agent_detected`, and Orca lists each worktree's agents in `worktree ps`, chats included, and names in `terminal list` the agents it knows only by their process or title, which no hook reports. hc cannot tell whether an agent runs in a terminal. When any candidate comes from a host that cannot tell, the tie-break is skipped and the binding stays ambiguous, so a herdr or Orca agent never wins over an hc terminal that may run one.
 3. **Repo inbox (planned):** a workspace whose branch is the repo's default branch (from `gh repo view --json defaultBranchRef`, cached) becomes that repo's inbox and receives `github-inbox:` subjects. If two workspaces sit on the default branch, the choice goes to the confirmation queue. Today `kelpie watch github <owner/repo>` from inside a workspace sets it explicitly.
-4. **Kubernetes:** a namespace pattern (`dev-{branch}`) or a label on the resource binds k8s subjects.
+4. **Kubernetes:** a namespace pattern (`dev-{branch}`) or a label on the resource binds Kubernetes subjects.
 5. **Link:** an event whose `Links` contains a bound subject binds to the same workspace. A Linear issue -> its PR -> its deploy -> its Dash0 check all reach one agent.
 6. **Deploy:** a deploy whose revision contains the merge commit of a recently bound PR binds that PR's workspace for a verification window (default 1 h).
 
-**Confidence.** Branch, explicit and k8s label matches bind silently and say so in the first delivered message. Link and deploy matches across more than one candidate workspace go to the queue.
+**Confidence.** Branch, explicit and Kubernetes label matches bind silently and say so in the first delivered message. Link and deploy matches across more than one candidate workspace go to the queue.
 
 **Confirmation queue.** `kelpie pending` lists suggestions; a herdr popup (`prefix+w`) can show the same list for a one-key yes or no. Unanswered suggestions expire after 24 h.
 
@@ -500,13 +500,13 @@ sources:
     map: .data.viewer.assignedIssues.nodes[] | linear_issue
 
   # Kubernetes: a streaming kubectl, local clusters only
-  - name: k8s-local
+  - name: kubernetes-local
     adapter: cli-watch
     contexts: ["kind-*", "k3d-*", k3s]   # one process per matching context
     run: [kubectl, --context, "{context}", get, "deploy,pods,jobs", -A,
           --watch, --output-watch-events, -o, json]
     map: |
-      .object | { subject: "k8s:\($context)/\(.metadata.namespace)/\(.kind | ascii_downcase)/\(.metadata.name)",
+      .object | { subject: "kubernetes:\($context)/\(.metadata.namespace)/\(.kind | ascii_downcase)/\(.metadata.name)",
                   fields: { ready: (.status.readyReplicas // 0), reason: (.status.containerStatuses[0].state.waiting.reason // "") },
                   fetch: ["kubectl", "--context", $context, "-n", .metadata.namespace, "describe", .kind, .metadata.name] }
     transitions:
@@ -522,7 +522,7 @@ sources:
     map: |
       .data.result[] | {
         subject: "prom:local/\(.metric.namespace)/error-ratio",
-        links: ["k8s-ns:\(.metric.namespace)"],
+        links: ["kubernetes-namespace:\(.metric.namespace)"],
         fields: { value: (.value[1] | tonumber), breached: ((.value[1] | tonumber) > 0.05) },
         fetch: ["curl", "-sfG", "http://localhost:9090/api/v1/query", "--data-urlencode", "query={query}"]
       }
@@ -550,7 +550,7 @@ kelpie doctor                    # CLIs on PATH, CLI and kelpie auth, hosts, las
 | `kelpie config show` | the config in effect: the built-in default with the file layered over it, plus warnings for what the file shadows |
 | `kelpie watch github <pr or issue url, owner/repo#N, owner/repo or org>` | bind a PR or an issue, or a repo's or org's GitHub notifications, to this workspace; without a target, the notifications of the current directory's repo |
 | `kelpie watch linear <ID or URL>` | bind a Linear issue to this workspace until it is completed or canceled |
-| `kelpie watch <provider> <target>` | one subcommand per provider, added with its source: `slack <thread-url>`, `k8s`, `prom` (planned) |
+| `kelpie watch <provider> <target>` | one subcommand per provider, added with its source: `slack <thread-url>`, `kubernetes <kind>/<name>`, `prom` (planned) |
 | `kelpie unwatch <subject>`, `kelpie unwatch <provider> <target>` | remove this workspace's binding, by the subject `kelpie status` lists or as it was watched; other workspaces keep theirs |
 | `kelpie auth login\|status\|logout <integration>` | store, check or remove the credential for a vendor without a CLI (Linear, Slack) in the system keychain |
 | `kelpie remind --in/--at/--cron <text>` | prompt this workspace's agent with `<text>` when due |
@@ -628,12 +628,12 @@ internal/host/        Host interface; herdr/ and orca/ adapters (CLI, herdr sock
 internal/adapter/     cli, cli-watch
 internal/auth/        kelpie auth: credentials in the system keychain, handed to sources on stdin
 internal/diff/        snapshot diff + transition rules, jq mapping (gojq)
-internal/bind/        branch, link, k8s, deploy, explicit binders + confirmation queue
+internal/bind/        branch, link, kubernetes, deploy, explicit binders + confirmation queue
 internal/route/       rules, debounce, batching, message rendering
 internal/schedule/    reminders: due times, cron parsing, catch-up, reminder.due events
 internal/service/     kelpie service: launchd and systemd unit templates, install
 internal/state/       State interface + in-memory implementation (persistence later)
-sources/              shipped source configs: github.yaml, slack.yaml, linear.yaml, k8s.yaml, prometheus.yaml
+sources/              shipped source configs: github.yaml, slack.yaml, linear.yaml, kubernetes.yaml, prometheus.yaml
 queries/              GraphQL files used by gh api
 slack-app.yaml        Slack app manifest with the read-only user scopes kelpie needs
 testdata/             recorded raw CLI and API outputs per source

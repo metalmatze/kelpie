@@ -7,7 +7,7 @@ import (
 
 // Subject is a stable URI for a watched thing.
 // github:org/repo#421, github-issue:org/repo#17, linear:ENG-123, slack:C0123ABCD/1761811234.567890,
-// k8s:kind-dev/dev-eng-123/deploy/api
+// kubernetes:kind-dev/dev-eng-123/deploy/api
 type Subject string
 
 // Observation is the current state of one subject, as a CLI or MCP tool reports it.
@@ -53,7 +53,7 @@ type Reminder struct {
 type Binding struct {
 	Subject   Subject
 	Workspace string // stable workspace ID from the host
-	Via       string // branch | link | k8s | explicit | confirmed
+	Via       string // branch | link | kubernetes | explicit | confirmed
 	Since     time.Time
 }
 
