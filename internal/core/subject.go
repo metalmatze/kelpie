@@ -33,6 +33,9 @@ var (
 	linearID  = regexp.MustCompile(`^(?i:linear:)?([A-Za-z][A-Za-z0-9]*-\d+)$`)
 )
 
+// IsSubject tells a subject from a URL or a provider's own ID.
+func IsSubject(s string) bool { return subject.MatchString(s) }
+
 // ParseSubject accepts a subject as kelpie status lists it, of any provider,
 // a Linear issue URL, or what GitHubSubject accepts, owner/repo#123 taken as
 // a PR. A bare ENG-123 stays GitHub input, an org there.
@@ -158,4 +161,65 @@ func (p Pattern) Match(s Subject) (map[string]any, bool) {
 		}
 	}
 	return fields, true
+}
+
+// BranchPattern binds a provider's subjects to the workspace whose branch
+// names them, as user/eng-123-fix-auth names linear:ENG-123. It goes from the
+// subject to a regex rather than from the branch to a subject: one branch may
+// name several IDs, and the provider's IDs keep their own case rules inside
+// the regex instead of kelpie guessing how eng-123 becomes ENG-123.
+type BranchPattern struct {
+	subject Pattern
+	branch  string
+}
+
+// NewBranchPattern takes a subject pattern like "linear:{id}" and a branch
+// regex in which each of its {placeholders} stands for the subject's value,
+// quoted. Other braces, like a {2} quantifier, stay regex.
+func NewBranchPattern(subject, branch string) (BranchPattern, error) {
+	p, err := NewPattern(subject)
+	if err != nil {
+		return BranchPattern{}, fmt.Errorf("subject %q: %w", subject, err)
+	}
+	b := BranchPattern{subject: p, branch: branch}
+	fields := map[string]any{}
+	for _, n := range p.re.SubexpNames() {
+		if n != "" {
+			fields[n] = "x"
+		}
+	}
+	if len(fields) == 0 {
+		return BranchPattern{}, fmt.Errorf("subject %q has no {placeholder} for the branch to name", subject)
+	}
+	if _, err := regexp.Compile(b.fill(fields)); err != nil {
+		return BranchPattern{}, fmt.Errorf("branch %q: %w", branch, err)
+	}
+	return b, nil
+}
+
+// About tells whether the pattern binds s at all.
+func (b BranchPattern) About(s Subject) bool {
+	_, ok := b.subject.Match(s)
+	return ok
+}
+
+// Match tells whether the pattern is about s at all, and if so whether
+// branch names it.
+func (b BranchPattern) Match(s Subject, branch string) (applies, names bool) {
+	fields, ok := b.subject.Match(s)
+	if !ok {
+		return false, false
+	}
+	re, err := regexp.Compile(b.fill(fields))
+	return true, err == nil && re.MatchString(branch)
+}
+
+func (b BranchPattern) fill(fields map[string]any) string {
+	return placeholder.ReplaceAllStringFunc(b.branch, func(m string) string {
+		v, ok := fields[m[1:len(m)-1]]
+		if !ok {
+			return m
+		}
+		return regexp.QuoteMeta(v.(string))
+	})
 }
