@@ -184,7 +184,7 @@ func TestIncreased(t *testing.T) {
 // defaultSource builds the mapper and differ of a source from the default config.
 func defaultSource(t *testing.T, name string) (*Mapper, *Differ) {
 	t.Helper()
-	cfg, err := config.Parse(nil)
+	cfg, err := config.Parse(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func observeFixtureIn(t *testing.T, dir string, m *Mapper, d *Differ, parent *co
 // same page again (4). Only full releases published since the last poll are
 // news, all in one update, and nothing of their names or notes is in it.
 func TestDefaultGitHubReleaseSource(t *testing.T) {
-	cfg, err := config.Parse(nil)
+	cfg, err := config.Parse(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestDefaultGitHubReleaseSource(t *testing.T) {
 // Watching a repo's releases again after the last watch ended reports only
 // what is published from then on, not what came out in between.
 func TestDefaultGitHubReleaseSourceRewatch(t *testing.T) {
-	cfg, err := config.Parse(nil)
+	cfg, err := config.Parse(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

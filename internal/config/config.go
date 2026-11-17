@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"cmp"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -27,17 +29,19 @@ var Default []byte
 //go:embed starter.yaml
 var Starter []byte
 
-// Config is Default with the person's file layered over it, so a new or
-// fixed default source reaches everyone who has a file, without copying.
+// Config is Default and the registered providers' sources with the person's
+// file layered over them, so a new or fixed default or provider source
+// reaches everyone who has a file, without copying.
 // The file wins key by key in mappings; a list the file sets replaces the
 // default's, the way people expect `ignore_actors: [...]` to read. Sources
 // and defs merge by their own rules, see layer.
 type Config struct {
-	Hosts     Hosts     `yaml:"hosts"`
-	Delivery  Delivery  `yaml:"delivery"`
-	Reminders Reminders `yaml:"reminders"`
-	Rules     Rules     `yaml:"rules"`
-	Binders   Binders   `yaml:"binders"`
+	Providers map[string]Provider `yaml:"providers,omitempty"`
+	Hosts     Hosts               `yaml:"hosts"`
+	Delivery  Delivery            `yaml:"delivery"`
+	Reminders Reminders           `yaml:"reminders"`
+	Rules     Rules               `yaml:"rules"`
+	Binders   Binders             `yaml:"binders"`
 	// Defs are jq function definitions shared by every map, transition
 	// expression and badge, so two sources reading the same GraphQL shape
 	// (github-pr and github-checks) judge it the same way.
@@ -47,6 +51,12 @@ type Config struct {
 	// Warnings are parts of the file that shadow the default, which a full
 	// copy of an older default does without the person meaning to.
 	Warnings []string `yaml:"-"`
+	// Provided holds the describe output of every provider that loaded, in
+	// name order. Skipped says why the others did not.
+	Provided []Described `yaml:"-"`
+	Skipped  []string    `yaml:"-"`
+	// From names the provider a source came from, for kelpie config show.
+	From map[string]string `yaml:"-"`
 }
 
 // Hosts lists the agent hosts kelpie delivers to. Enable several to reach
@@ -115,10 +125,16 @@ type Rules struct {
 
 type Binders struct {
 	Branch bool `yaml:"branch"`
-	// Linear binds linear:ENG-123 to the one workspace on a branch naming
-	// the issue, like eng-123-fix-auth, or to the one of several that runs
-	// an agent.
-	Linear bool `yaml:"linear"`
+	// Providers turns a provider's branch patterns off by its name, as
+	// binders.linear: false; a provider not listed binds by branch. Inline,
+	// so that key reads the same as before Linear became a provider.
+	Providers map[string]bool `yaml:",inline"`
+}
+
+// ByBranch tells whether the branch patterns of provider bind.
+func (b Binders) ByBranch(provider string) bool {
+	on, ok := b.Providers[provider]
+	return !ok || on
 }
 
 // omitempty here only keeps kelpie config show to what a source sets.
@@ -267,23 +283,26 @@ func DefaultPath() string {
 	return filepath.Join(dir, "kelpie", "config.yaml")
 }
 
-// Load layers the file at path over Default. A missing file means Default
-// alone, so kelpie runs before kelpie init.
-func Load(path string) (*Config, error) {
+// Load layers the file at path, and the providers it registers, over
+// Default. A missing file means Default alone, so kelpie runs before kelpie
+// init.
+func Load(ctx context.Context, path string) (*Config, error) {
 	data, err := read(path)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := Parse(data)
+	cfg, err := Parse(ctx, data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-// Parse layers file over Default and prepends defs to every expression.
-func Parse(file []byte) (*Config, error) {
-	cfg, err := layer(file)
+// Parse layers file over Default, runs the describe of every provider file
+// registers, prepends defs to every expression and fills in the stdin of
+// auth: <name> from the provider's credential.
+func Parse(ctx context.Context, file []byte) (*Config, error) {
+	cfg, err := layer(ctx, file)
 	if err != nil {
 		return nil, err
 	}
@@ -298,28 +317,75 @@ func Parse(file []byte) (*Config, error) {
 				*e = withDefs(cfg.Defs, *e)
 			}
 		}
+		if src.Auth == nil {
+			continue
+		}
+		c, _, ok := cfg.Credential(src.Auth.Name)
+		if !ok {
+			return nil, fmt.Errorf("source %s: auth %q is no credential of a provider; %s", src.Name, src.Auth.Name, cfg.credentialNames())
+		}
+		// A copy: Auth is shared with the layered sources kelpie config show prints.
+		a := *src.Auth
+		a.Stdin = cmp.Or(a.Stdin, c.Stdin)
+		src.Auth = &a
 	}
 	return cfg, nil
 }
 
 // Effective is the layered config at path as YAML, before defs are
-// prepended, which would repeat them in every expression.
-func Effective(path string) ([]byte, []string, error) {
+// prepended, which would repeat them in every expression. Each source a
+// provider contributed says so in a comment, and each provider lists what it
+// contributed. The warnings include the providers that were skipped.
+func Effective(ctx context.Context, path string) ([]byte, []string, error) {
 	data, err := read(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg, err := layer(data)
+	cfg, err := layer(ctx, data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
+	var doc yaml.Node
+	if err := doc.Encode(cfg); err != nil {
+		return nil, nil, err
+	}
+	cfg.annotate(&doc)
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)
-	if err := enc.Encode(cfg); err != nil {
+	if err := enc.Encode(&doc); err != nil {
 		return nil, nil, err
 	}
-	return b.Bytes(), cfg.Warnings, nil
+	return b.Bytes(), append(cfg.Skipped, cfg.Warnings...), nil
+}
+
+// annotate comments the encoded config with where provider parts came from.
+func (c *Config) annotate(doc *yaml.Node) {
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		key, val := doc.Content[i], doc.Content[i+1]
+		switch key.Value {
+		case "providers":
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				name := val.Content[j].Value
+				k := slices.IndexFunc(c.Provided, func(d Described) bool { return d.Name == name })
+				if k < 0 {
+					val.Content[j].HeadComment = "skipped, see the warnings"
+					continue
+				}
+				val.Content[j].HeadComment = c.Provided[k].summary(c.From)
+			}
+		case "sources":
+			for _, src := range val.Content {
+				for j := 0; j+1 < len(src.Content); j += 2 {
+					if src.Content[j].Value == "name" {
+						if p := c.From[src.Content[j+1].Value]; p != "" {
+							src.HeadComment = "from provider " + p
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func read(path string) ([]byte, error) {
@@ -330,18 +396,18 @@ func read(path string) ([]byte, error) {
 	return data, err
 }
 
-// layer decodes Default and then the file into one Config. Sources merge by
-// name, and a file source replaces the default one whole rather than field
-// by field: run, stdin, map, transitions and badge are one program over one
-// data shape, so a file's map mixed with a newer default query (or the other
-// way round) would break without any error. defs append to the default's, so
-// a file adds helpers and keeps the shipped ones; a jq def of the same name
-// and arity shadows the earlier one for every expression, though not inside
-// default defs that already call it.
+// layer decodes Default, then each provider's sources and defs, then the
+// file into one Config. Sources merge by name, and a file source replaces
+// the default or provider one whole rather than field by field: run, stdin,
+// map, transitions and badge are one program over one data shape, so a
+// file's map mixed with a newer default query (or the other way round) would
+// break without any error. defs append, so a file adds helpers and keeps the
+// shipped ones; a jq def of the same name and arity shadows the earlier one
+// for every expression, though not inside earlier defs that already call it.
 //
 // A file source of a default's name is kept even when it is just an old copy:
 // kelpie cannot tell that from a deliberate change, so it warns instead.
-func layer(file []byte) (*Config, error) {
+func layer(ctx context.Context, file []byte) (*Config, error) {
 	var cfg Config
 	if err := decode(Default, &cfg); err != nil {
 		return nil, fmt.Errorf("built-in default: %w", err)
@@ -352,7 +418,30 @@ func layer(file []byte) (*Config, error) {
 		return nil, err
 	}
 
+	cfg.Provided, cfg.Skipped = describeAll(ctx, cfg.Providers)
+	cfg.From = map[string]string{}
 	sources := slices.Clone(builtin)
+	for _, p := range cfg.Provided {
+		for _, s := range p.Sources {
+			j := slices.IndexFunc(sources, func(b Source) bool { return b.Name == s.Name })
+			switch {
+			case j < 0:
+				sources = append(sources, s)
+			case cfg.From[s.Name] != "":
+				cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("providers: %s and %s both have a source %s; kept %s's", cfg.From[s.Name], p.Name, s.Name, cfg.From[s.Name]))
+				continue
+			default:
+				// A provider taking over a built-in source is the move from
+				// default.yaml to a binary, not a mistake.
+				sources[j] = s
+			}
+			cfg.From[s.Name] = p.Name
+		}
+		if p.Defs != "" {
+			builtinDefs += "\n" + p.Defs
+		}
+	}
+
 	var replaced []string
 	for i, s := range cfg.Sources {
 		if s.Name == "" {
@@ -369,12 +458,18 @@ func layer(file []byte) (*Config, error) {
 		case j >= 0:
 			sources[j] = s
 			if s.Enabled == nil || *s.Enabled {
-				replaced = append(replaced, s.Name)
+				if p := cfg.From[s.Name]; p != "" {
+					replaced = append(replaced, s.Name+" (provider "+p+")")
+				} else {
+					replaced = append(replaced, s.Name)
+				}
 			}
+			delete(cfg.From, s.Name)
 		case toggle:
 			// A warning, not an error: a default source that a later kelpie
-			// renames or drops must not stop the daemon from starting.
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("sources: %s is switched on or off, but there is no built-in source of that name", s.Name))
+			// renames or drops, or a provider that failed to load, must not
+			// stop the daemon from starting.
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("sources: %s is switched on or off, but no built-in or provider source has that name", s.Name))
 		default:
 			sources = append(sources, s)
 		}
@@ -387,6 +482,11 @@ func layer(file []byte) (*Config, error) {
 	}
 	if len(replaced) > 0 {
 		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("replaces built-in sources: %s. A replaced source no longer gets kelpie's fixes; delete it from the file unless you changed it on purpose", strings.Join(replaced, ", ")))
+	}
+	for name := range cfg.Binders.Providers {
+		if !slices.ContainsFunc(cfg.Provided, func(d Described) bool { return d.Name == name }) {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("binders: %s is no provider that loaded", name))
+		}
 	}
 
 	if cfg.Defs == "" {

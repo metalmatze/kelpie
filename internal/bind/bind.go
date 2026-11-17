@@ -3,7 +3,6 @@ package bind
 import (
 	"log/slog"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -16,10 +15,13 @@ import (
 
 // Binder resolves an event's subject to the workspace that owns the work.
 type Binder struct {
-	state        state.State
-	branch       bool
-	LinearBranch bool
-	now          func() time.Time
+	state  state.State
+	branch bool
+	// Branches are the providers' branch patterns, of those whose branch
+	// binding is on. A subject one of them is about binds by it alone, not
+	// by binders.branch, which is for PRs.
+	Branches []core.BranchPattern
+	now      func() time.Time
 
 	mu         sync.Mutex
 	workspaces map[string]host.Workspace
@@ -155,7 +157,7 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		ws, alive := b.workspaces[bd.Workspace]
 		// A branch binding follows the branch: after a checkout of another
 		// branch the workspace no longer owns this PR.
-		if alive && (bd.Via != "branch" || matchesBranch(ws, ev)) {
+		if alive && (bd.Via != "branch" || b.followsBranch(ws, ev)) {
 			targets = append(targets, Target{Workspace: ws, Binding: bd})
 			continue
 		}
@@ -165,17 +167,14 @@ func (b *Binder) Resolve(ev core.Event) []Target {
 		}
 		b.state.DeleteBinding(ev.Subject, bd.Workspace)
 	}
-	enabled := b.branch
-	if linearID(ev.Subject) != "" {
-		enabled = b.LinearBranch
-	}
-	if len(targets) > 0 || !enabled {
+	patterns := b.patterns(ev.Subject)
+	if len(targets) > 0 || len(patterns) == 0 && !b.branch {
 		return targets
 	}
 
 	var candidates []host.Workspace
 	for _, ws := range b.workspaces {
-		if matchesBranch(ws, ev) {
+		if len(patterns) > 0 && namedByBranch(patterns, ev.Subject, ws.Branch) || len(patterns) == 0 && matchesBranch(ws, ev) {
 			candidates = append(candidates, ws)
 		}
 	}
@@ -218,10 +217,36 @@ func (b *Binder) Bindings(s core.Subject) []core.Binding { return b.state.Bindin
 
 func (b *Binder) AllBindings() []core.Binding { return b.state.AllBindings() }
 
-func matchesBranch(ws host.Workspace, ev core.Event) bool {
-	if id := linearID(ev.Subject); id != "" {
-		return linearBranch(id).MatchString(ws.Branch)
+// followsBranch tells whether ws is still on the branch that bound ev's
+// subject to it.
+func (b *Binder) followsBranch(ws host.Workspace, ev core.Event) bool {
+	if patterns := b.patterns(ev.Subject); len(patterns) > 0 {
+		return namedByBranch(patterns, ev.Subject, ws.Branch)
 	}
+	return matchesBranch(ws, ev)
+}
+
+// patterns are the branch patterns about s. Called with b.mu held.
+func (b *Binder) patterns(s core.Subject) []core.BranchPattern {
+	var ps []core.BranchPattern
+	for _, p := range b.Branches {
+		if p.About(s) {
+			ps = append(ps, p)
+		}
+	}
+	return ps
+}
+
+func namedByBranch(patterns []core.BranchPattern, s core.Subject, branch string) bool {
+	return slices.ContainsFunc(patterns, func(p core.BranchPattern) bool {
+		_, names := p.Match(s, branch)
+		return names
+	})
+}
+
+// matchesBranch binds a PR by its head branch, in one of the workspace's
+// repos, fork remotes included.
+func matchesBranch(ws host.Workspace, ev core.Event) bool {
 	branch := ev.Bind["branch"]
 	if branch == "" || ws.Branch != branch {
 		return false
@@ -232,21 +257,6 @@ func matchesBranch(ws host.Workspace, ev core.Event) bool {
 		}
 	}
 	return false
-}
-
-func linearID(s core.Subject) string {
-	id, ok := strings.CutPrefix(string(s), "linear:")
-	if !ok {
-		return ""
-	}
-	return id
-}
-
-// linearBranch matches a branch naming the issue as a whole word, in any
-// case: eng-123-fix-auth and user/ENG-123, but not eng-1234 or xeng-123. No
-// repo check, unlike PRs: a Linear issue belongs to no repo.
-func linearBranch(id string) *regexp.Regexp {
-	return regexp.MustCompile(`(?i)(?:^|[^a-z0-9])` + regexp.QuoteMeta(id) + `(?:$|[^0-9])`)
 }
 
 // unlisted stands in for a workspace whose host has not listed it yet. The

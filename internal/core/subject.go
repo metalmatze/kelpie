@@ -26,24 +26,17 @@ var (
 
 	ownerURL   = regexp.MustCompile(`^https?://github\.com/([\w.-]+)(?:/([\w.-]+))?(?:[/?#].*)?$`)
 	ownerShort = regexp.MustCompile(`^([\w.-]+)(?:/([\w.-]+))?$`)
-
-	// linear.app/<workspace>/issue/ENG-123/<slug>; the slug follows the title
-	// and may be missing or stale, the identifier never is.
-	linearURL = regexp.MustCompile(`^https?://linear\.app/[^/]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)(?:[/?#].*)?$`)
-	linearID  = regexp.MustCompile(`^(?i:linear:)?([A-Za-z][A-Za-z0-9]*-\d+)$`)
 )
 
 // IsSubject tells a subject from a URL or a provider's own ID.
 func IsSubject(s string) bool { return subject.MatchString(s) }
 
 // ParseSubject accepts a subject as kelpie status lists it, of any provider,
-// a Linear issue URL, or what GitHubSubject accepts, owner/repo#123 taken as
-// a PR. A bare ENG-123 stays GitHub input, an org there.
+// or what GitHubSubject accepts, owner/repo#123 taken as a PR. The targets of
+// other providers (a Linear URL, ENG-123) are theirs to parse: kelpie routes
+// them by the providers' target patterns before it gets here.
 func ParseSubject(s string) (Subject, error) {
 	s = strings.TrimSpace(s)
-	if linearURL.MatchString(s) || strings.HasPrefix(strings.ToLower(s), "linear:") {
-		return LinearSubject(s)
-	}
 	if subject.MatchString(s) {
 		return Subject(s), nil
 	}
@@ -109,21 +102,6 @@ func GitHubSubject(s string, isPR IsPR) (Subject, error) {
 		return Subject("github-inbox:" + m[1]), nil
 	}
 	return Subject("github-inbox:" + m[1] + "/" + m[2]), nil
-}
-
-// LinearSubject accepts an issue identifier (ENG-123), its subject
-// (linear:ENG-123) or its URL. Linear matches identifiers in any case, but
-// the subject is a map key for watches and snapshots, so it is upper case.
-func LinearSubject(s string) (Subject, error) {
-	s = strings.TrimSpace(s)
-	m := linearURL.FindStringSubmatch(s)
-	if m == nil {
-		m = linearID.FindStringSubmatch(s)
-	}
-	if m == nil {
-		return "", fmt.Errorf("cannot parse %q: want a Linear issue ID like ENG-123 or its URL", s)
-	}
-	return Subject("linear:" + strings.ToUpper(m[1])), nil
 }
 
 // Pattern matches subjects against "github:{owner}/{name}#{number}" and

@@ -12,6 +12,8 @@ import (
 	"golang.org/x/term"
 
 	"github.com/metalmatze/kelpie/internal/auth"
+	"github.com/metalmatze/kelpie/internal/config"
+	"github.com/metalmatze/kelpie/internal/provider"
 )
 
 type AuthCmd struct {
@@ -21,11 +23,11 @@ type AuthCmd struct {
 }
 
 type AuthLoginCmd struct {
-	Integration string `arg:"" help:"Integration: ${integrations}."`
+	Integration string `arg:"" help:"Credential, as the provider that needs it names it, like linear; kelpie auth status lists them."`
 }
 
-func (c *AuthLoginCmd) Run(ctx context.Context) error {
-	in, err := integration(c.Integration)
+func (c *AuthLoginCmd) Run(ctx context.Context, g *Globals) error {
+	in, p, err := credential(ctx, g, c.Integration)
 	if err != nil {
 		return err
 	}
@@ -44,7 +46,7 @@ func (c *AuthLoginCmd) Run(ctx context.Context) error {
 	fmt.Printf("stored the %s credential\n", in.Name)
 	// Stored first: a network hiccup should not lose the paste. Failing still
 	// keeps login && something from going on with a key that does not work.
-	who, err := in.Verify(ctx, token)
+	who, err := provider.Verify(ctx, p.Command, in.Verify, token)
 	if err != nil {
 		return fmt.Errorf("stored, but checking it with %s failed: %v; check again with kelpie auth status %s", in.Name, err, in.Name)
 	}
@@ -108,19 +110,27 @@ func readSecret(ctx context.Context, prompt string) (string, error) {
 }
 
 type AuthStatusCmd struct {
-	Integration string `arg:"" optional:"" help:"Integration: ${integrations}. Default: all of them."`
+	Integration string `arg:"" optional:"" help:"Credential, as the provider that needs it names it. Default: the credentials of every registered provider."`
 }
 
-// Run fails when any integration asked about is missing or rejected, so a
+// Run fails when any credential asked about is missing or rejected, so a
 // script can test the exit code.
-func (c *AuthStatusCmd) Run(ctx context.Context) error {
-	ins := auth.Integrations
+func (c *AuthStatusCmd) Run(ctx context.Context, g *Globals) error {
+	cfg, err := loadProviders(ctx, g)
+	if err != nil {
+		return err
+	}
+	ins := cfg.Credentials()
 	if c.Integration != "" {
-		in, err := integration(c.Integration)
+		in, _, err := lookupCredential(cfg, c.Integration)
 		if err != nil {
 			return err
 		}
-		ins = []auth.Integration{in}
+		ins = []config.Credential{in}
+	}
+	if len(ins) == 0 {
+		fmt.Println("no registered provider needs a credential")
+		return nil
 	}
 	failed := 0
 	for _, in := range ins {
@@ -135,7 +145,8 @@ func (c *AuthStatusCmd) Run(ctx context.Context) error {
 			failed++
 			continue
 		}
-		who, err := in.Verify(ctx, token)
+		_, p, _ := cfg.Credential(in.Name)
+		who, err := provider.Verify(ctx, p.Command, in.Verify, token)
 		if err != nil {
 			fmt.Printf("%s: stored, but rejected: %v\n", in.Name, err)
 			failed++
@@ -150,29 +161,43 @@ func (c *AuthStatusCmd) Run(ctx context.Context) error {
 }
 
 type AuthLogoutCmd struct {
-	Integration string `arg:"" help:"Integration: ${integrations}."`
+	Integration string `arg:"" help:"Credential, as the provider that needs it names it."`
 }
 
+// Run needs no provider: a credential whose provider was unregistered must
+// still be removable.
 func (c *AuthLogoutCmd) Run(ctx context.Context) error {
-	in, err := integration(c.Integration)
-	if err != nil {
-		return err
-	}
-	if err := auth.Delete(ctx, in.Name); err != nil {
+	if err := auth.Delete(ctx, c.Integration); err != nil {
 		if errors.Is(err, auth.ErrNotStored) {
-			fmt.Printf("%s: nothing stored\n", in.Name)
+			fmt.Printf("%s: nothing stored\n", c.Integration)
 			return nil
 		}
 		return err
 	}
-	fmt.Printf("removed the %s credential\n", in.Name)
+	fmt.Printf("removed the %s credential\n", c.Integration)
 	return nil
 }
 
-func integration(name string) (auth.Integration, error) {
-	in, ok := auth.Lookup(name)
-	if !ok {
-		return auth.Integration{}, fmt.Errorf("no integration %q; kelpie holds credentials for %s", name, strings.Join(auth.Names(), ", "))
+// credential loads the providers and finds the one holding name.
+func credential(ctx context.Context, g *Globals, name string) (config.Credential, config.Described, error) {
+	cfg, err := loadProviders(ctx, g)
+	if err != nil {
+		return config.Credential{}, config.Described{}, err
 	}
-	return in, nil
+	return lookupCredential(cfg, name)
+}
+
+func lookupCredential(cfg *config.Config, name string) (config.Credential, config.Described, error) {
+	in, p, ok := cfg.Credential(name)
+	if !ok {
+		var names []string
+		for _, c := range cfg.Credentials() {
+			names = append(names, c.Name)
+		}
+		if len(names) == 0 {
+			return in, p, fmt.Errorf("no credential %q: no registered provider needs one; register its provider under providers: in the config", name)
+		}
+		return in, p, fmt.Errorf("no credential %q; registered providers need %s", name, strings.Join(names, ", "))
+	}
+	return in, p, nil
 }

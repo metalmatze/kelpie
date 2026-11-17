@@ -306,7 +306,10 @@ func writeItem(b *strings.Builder, it item) {
 			if br := it.ev.Bind["branch"]; br != "" {
 				fmt.Fprintf(b, "  (bound to this workspace by branch %s)\n", br)
 			} else {
-				fmt.Fprintf(b, "  (bound to this workspace because its branch names %s)\n", strings.TrimPrefix(string(it.ev.Subject), "linear:"))
+				// A provider's branch pattern: the branch names the ID after the
+				// subject's prefix, like ENG-123 of linear:ENG-123.
+				_, id, _ := strings.Cut(string(it.ev.Subject), ":")
+				fmt.Fprintf(b, "  (bound to this workspace because its branch names %s)\n", id)
 			}
 		default:
 			fmt.Fprintf(b, "  (bound to this workspace via %s)\n", it.bd.Via)

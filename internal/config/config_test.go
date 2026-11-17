@@ -15,7 +15,7 @@ func names(c *Config) []string {
 }
 
 func TestLayer(t *testing.T) {
-	base, err := layer(nil)
+	base, err := layer(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestLayer(t *testing.T) {
 		{name: "source twice", file: "sources: [{name: a}, {name: a}]", err: "a is listed twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := layer([]byte(tc.file))
+			c, err := layer(t.Context(), []byte(tc.file))
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
 					t.Fatalf("err = %v, want %q", err, tc.err)
@@ -184,7 +184,7 @@ func TestLayer(t *testing.T) {
 // Parse compiles the layered defs into every expression, so a file def is
 // usable by its own sources.
 func TestParseDefs(t *testing.T) {
-	c, err := Parse([]byte("defs: 'def mine: 1;'\nsources: [{name: x, adapter: cli, run: [true], map: mine}]"))
+	c, err := Parse(t.Context(), []byte("defs: 'def mine: 1;'\nsources: [{name: x, adapter: cli, run: [true], map: mine}]"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestAuthForms(t *testing.T) {
 		{yaml: `auth: { name: linear, stdn: "x" }`, err: `auth has no field "stdn"`},
 		{yaml: `auth: [linear]`, err: "auth is an integration name"},
 	} {
-		c, err := layer([]byte("sources:\n  - name: s\n    run: [cat]\n    " + tc.yaml + "\n"))
+		c, err := layer(t.Context(), []byte("sources:\n  - name: s\n    run: [cat]\n    "+tc.yaml+"\n"))
 		if tc.err != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("%s: got %v, want %q", tc.yaml, err, tc.err)

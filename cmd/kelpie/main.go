@@ -16,7 +16,6 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/metalmatze/kelpie/internal/adapter"
-	"github.com/metalmatze/kelpie/internal/auth"
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/control"
 	"github.com/metalmatze/kelpie/internal/core"
@@ -61,7 +60,7 @@ func main() {
 	kctx := kong.Parse(&cli,
 		kong.Name("kelpie"),
 		kong.Description("Route SDLC events to the coding agent that owns the work."),
-		kong.Vars{"config": config.DefaultPath(), "integrations": strings.Join(auth.Names(), ", ")},
+		kong.Vars{"config": config.DefaultPath()},
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(&cli.Globals),
 	)
@@ -125,8 +124,8 @@ func (InitCmd) Run(g *Globals) error {
 
 type ConfigShowCmd struct{}
 
-func (ConfigShowCmd) Run(g *Globals) error {
-	out, warnings, err := config.Effective(g.Config)
+func (ConfigShowCmd) Run(ctx context.Context, g *Globals) error {
+	out, warnings, err := config.Effective(ctx, g.Config)
 	if err != nil {
 		return err
 	}
@@ -140,11 +139,11 @@ func (ConfigShowCmd) Run(g *Globals) error {
 type SourceTestCmd struct {
 	Name    string `arg:"" help:"Source name."`
 	Raw     bool   `help:"Print the command's raw output instead of observations (for fixtures)."`
-	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, or a PR, issue or Linear issue URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
+	Subject string `help:"For a for_each source: the subject (as kelpie status lists it, a URL or ID a provider claims, or a PR or issue URL, owner/repo or org) to run for. Default for for_each.source: the first parent subject matching while."`
 }
 
 func (c *SourceTestCmd) Run(ctx context.Context, g *Globals) error {
-	cfg, err := config.Load(g.Config)
+	cfg, err := loadProviders(ctx, g)
 	if err != nil {
 		return err
 	}
@@ -206,7 +205,7 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 		if c.Subject == "" {
 			return nil, fmt.Errorf("source %s runs per watched subject; pass --subject", s.Name)
 		}
-		subject, err := core.ParseSubject(c.Subject)
+		subject, err := subjectOf(ctx, cfg, c.Subject)
 		if err != nil {
 			return nil, err
 		}
@@ -241,7 +240,7 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 	}
 	var subject core.Subject
 	if c.Subject != "" {
-		if subject, err = core.ParseSubject(c.Subject); err != nil {
+		if subject, err = subjectOf(ctx, cfg, c.Subject); err != nil {
 			return nil, err
 		}
 	}
@@ -258,24 +257,33 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 
 type WatchCmd struct {
 	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request, an issue, a workflow run or a repo's releases, or the notifications of a repo or org."`
-	Linear WatchLinearCmd `cmd:"" name:"linear" help:"Watch a Linear issue until it is completed or canceled."`
+	Target WatchTargetCmd `cmd:"" name:"target" default:"withargs" help:"Watch what a provider's target names, like linear ENG-123, or a URL or ID that one provider claims."`
 }
 
-type WatchLinearCmd struct {
-	Target    string `arg:"" help:"Issue ID like ENG-123, or the issue's URL."`
-	Workspace string `help:"Pane or terminal to prompt. Default: the one this runs in."`
+type WatchTargetCmd struct {
+	Target    []string `arg:"" name:"provider target" help:"A provider and its target (linear ENG-123), or a target alone that one provider's patterns claim (a Linear issue URL), else a GitHub URL or a subject as kelpie status lists it."`
+	Workspace string   `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
-func (c *WatchLinearCmd) Run(ctx context.Context) error {
+func (c *WatchTargetCmd) Run(ctx context.Context, g *Globals) error {
 	workspace, err := callerWorkspace(c.Workspace)
 	if err != nil {
 		return err
 	}
-	subject, err := core.LinearSubject(c.Target)
+	cfg, err := loadProviders(ctx, g)
 	if err != nil {
 		return err
 	}
-	return watch(ctx, subject, workspace)
+	subjects, err := resolve(ctx, cfg, c.Target, func(s string) (core.Subject, error) { return githubWatchTarget(ctx, s) })
+	if err != nil {
+		return err
+	}
+	for _, s := range subjects {
+		if err := watch(ctx, s, workspace); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type WatchGitHubCmd struct {
@@ -288,18 +296,27 @@ func (c *WatchGitHubCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	subject, err := githubTarget(ctx, c.Target)
+	subject, err := githubWatchTarget(ctx, c.Target)
 	if err != nil {
 		return err
 	}
-	// The notifications of an org that does not exist are just always empty,
-	// so catch a typo here. The daemon's first poll checks a repo or a PR.
+	return watch(ctx, subject, workspace)
+}
+
+// githubWatchTarget is githubTarget, checking that an org exists: the
+// notifications of one that does not are just always empty, so catch a typo
+// here. The daemon's first poll checks a repo or a PR.
+func githubWatchTarget(ctx context.Context, target string) (core.Subject, error) {
+	subject, err := githubTarget(ctx, target)
+	if err != nil {
+		return "", err
+	}
 	if owner, ok := strings.CutPrefix(string(subject), "github-inbox:"); ok && !strings.Contains(owner, "/") {
 		if err := exec.CommandContext(ctx, "gh", "api", "users/"+owner, "--silent").Run(); err != nil {
-			return fmt.Errorf("no GitHub org or user %s (gh api users/%s: %w)", owner, owner, err)
+			return "", fmt.Errorf("no GitHub org or user %s (gh api users/%s: %w)", owner, owner, err)
 		}
 	}
-	return watch(ctx, subject, workspace)
+	return subject, nil
 }
 
 func watch(ctx context.Context, subject core.Subject, workspace string) error {
@@ -338,35 +355,36 @@ func githubTarget(ctx context.Context, s string) (core.Subject, error) {
 }
 
 type UnwatchCmd struct {
-	Subject UnwatchSubjectCmd `cmd:"" default:"withargs" help:"Stop watching a subject as kelpie status lists it."`
+	Subject UnwatchSubjectCmd `cmd:"" name:"subject" default:"withargs" help:"Stop watching a subject as kelpie status lists it, or a provider's target, like linear ENG-123."`
 	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request, an issue, a workflow run or a repo's releases, or the notifications of a repo or org."`
-	Linear  UnwatchLinearCmd  `cmd:"" name:"linear" help:"Stop watching a Linear issue."`
-}
-
-type UnwatchLinearCmd struct {
-	Target    string `arg:"" help:"Issue ID like ENG-123, or the issue's URL."`
-	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
-}
-
-func (c *UnwatchLinearCmd) Run(ctx context.Context) error {
-	subject, err := core.LinearSubject(c.Target)
-	if err != nil {
-		return err
-	}
-	return unwatch(ctx, subject, c.Workspace)
 }
 
 type UnwatchSubjectCmd struct {
-	Subject   string `arg:"" help:"Subject as kelpie status lists it, like github-inbox:prometheus."`
-	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
+	Target    []string `arg:"" name:"subject or provider target" help:"Subject as kelpie status lists it (github-inbox:prometheus), a provider and its target (linear ENG-123), or a target alone that one provider claims."`
+	Workspace string   `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
 }
 
-func (c *UnwatchSubjectCmd) Run(ctx context.Context) error {
-	subject, err := core.ParseSubject(c.Subject)
-	if err != nil {
-		return err
+func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
+	var subjects []core.Subject
+	if len(c.Target) == 1 && core.IsSubject(c.Target[0]) {
+		// As kelpie status lists it: no provider needs to run, so this works
+		// even when the provider that made it is gone.
+		subjects = []core.Subject{core.Subject(c.Target[0])}
+	} else {
+		cfg, err := loadProviders(ctx, g)
+		if err != nil {
+			return err
+		}
+		if subjects, err = resolve(ctx, cfg, c.Target, func(s string) (core.Subject, error) { return githubTarget(ctx, s) }); err != nil {
+			return err
+		}
 	}
-	return unwatch(ctx, subject, c.Workspace)
+	for _, s := range subjects {
+		if err := unwatch(ctx, s, c.Workspace); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type UnwatchGitHubCmd struct {
@@ -402,7 +420,7 @@ func (StatusCmd) Run(ctx context.Context) error {
 		return err
 	}
 	if len(st.Watches) == 0 {
-		fmt.Println("watching nothing; run kelpie watch github <pr or issue url, repo or org> or kelpie watch linear <issue> inside an agent's pane")
+		fmt.Println("watching nothing; run kelpie watch github <pr or issue url, repo or org> or kelpie watch <provider> <target> inside an agent's pane")
 	}
 	for _, w := range st.Watches {
 		fmt.Printf("%-50s pane %-8s since %s\n", w.Subject, w.Workspace, w.Since.Format("Jan 2 15:04"))
@@ -421,16 +439,25 @@ type RemindCmd struct {
 	In        time.Duration `xor:"when" help:"Due after this long, like 1h or 90m."`
 	At        string        `xor:"when" help:"Due at this local time: 10:00 (the next one), 2026-10-31T10:00, or RFC 3339."`
 	Cron      string        `xor:"when" help:"Due on this cron schedule, like '0 9 * * 1-5' or @daily; local time unless prefixed with CRON_TZ=."`
-	Subject   string        `help:"Pull request or issue, GitHub or Linear, the reminder is about (its URL, or the subject as kelpie status lists it). Its pending updates and fetch command come with the reminder."`
+	Subject   string        `help:"What the reminder is about: a PR or issue URL, a URL or ID a provider claims (a Linear issue), or the subject as kelpie status lists it. Its pending updates and fetch command come with the reminder."`
 	Workspace string        `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
-func (c *RemindCmd) Run(ctx context.Context) error {
+func (c *RemindCmd) Run(ctx context.Context, g *Globals) error {
 	workspace, err := callerWorkspace(c.Workspace)
 	if err != nil {
 		return err
 	}
-	req := control.RemindRequest{Workspace: workspace, Text: strings.Join(c.Text, " "), Subject: core.Subject(c.Subject), Cron: c.Cron}
+	req := control.RemindRequest{Workspace: workspace, Text: strings.Join(c.Text, " "), Cron: c.Cron}
+	if c.Subject != "" {
+		cfg, err := loadProviders(ctx, g)
+		if err != nil {
+			return err
+		}
+		if req.Subject, err = subjectOf(ctx, cfg, c.Subject); err != nil {
+			return err
+		}
+	}
 	switch {
 	case c.In > 0:
 		req.Due = time.Now().Add(c.In)

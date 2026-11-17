@@ -19,10 +19,10 @@ watch() {
 		notify "No pane to watch for: focus an agent's pane first."
 		return
 	fi
-	local provider=github
-	[[ "$1" == https://linear.app/* ]] && provider=linear
+	# No provider name: kelpie gives the link to the provider whose target
+	# patterns claim it, a GitHub link to the built-in GitHub.
 	local out
-	if out=$("$kelpie" watch "$provider" "$1" --workspace "$pane" 2>&1); then
+	if out=$("$kelpie" watch "$1" --workspace "$pane" 2>&1); then
 		notify "$(head -n1 <<<"$out")"
 	else
 		notify "Not watching: ${out#kelpie: error: }"

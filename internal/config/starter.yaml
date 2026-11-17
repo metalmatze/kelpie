@@ -11,6 +11,12 @@
 #
 # Restart the daemon after editing; kelpie reads this file only at start.
 
+# Integrations in their own binaries, by the command to run; kelpie never
+# looks for them on PATH. Linear needs kelpie-linear, then
+# `kelpie auth login linear`.
+# providers:
+#   linear: {command: [kelpie-linear]}
+
 # hosts:
 #   herdr:
 #     enabled: true

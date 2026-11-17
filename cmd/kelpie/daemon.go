@@ -98,9 +98,21 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	})
 
-	cfg, err := config.Load(g.Config)
+	cfg, err := config.Load(ctx, g.Config)
 	if err != nil {
 		return err
+	}
+	for _, s := range cfg.Skipped {
+		slog.Warn(s, "file", g.Config)
+	}
+	for _, p := range cfg.Provided {
+		var sources []string
+		for _, s := range p.Sources {
+			if cfg.From[s.Name] == p.Name {
+				sources = append(sources, s.Name)
+			}
+		}
+		slog.Info("provider loaded", "provider", p.Name, "command", p.Command, "sources", sources, "branch_patterns", len(p.Branches), "targets", len(p.Targets))
 	}
 	for _, w := range cfg.Warnings {
 		slog.Warn("config: "+w, "file", g.Config)
@@ -129,7 +141,18 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 	d.binder = bind.New(st, cfg.Binders.Branch)
-	d.binder.LinearBranch = cfg.Binders.Linear
+	for _, p := range cfg.Provided {
+		if !cfg.Binders.ByBranch(p.Name) {
+			continue
+		}
+		for _, br := range p.Branches {
+			bp, err := core.NewBranchPattern(br.Subject, br.Branch)
+			if err != nil {
+				return fmt.Errorf("provider %s: %w", p.Name, err)
+			}
+			d.binder.Branches = append(d.binder.Branches, bp)
+		}
+	}
 	for _, h := range d.hosts {
 		d.binder.Await(h.Name())
 	}

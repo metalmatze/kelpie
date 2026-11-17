@@ -31,7 +31,7 @@ func TestListSourceKeepsSnapshotsByDefault(t *testing.T) {
 }
 
 func TestForgetMissing(t *testing.T) {
-	cfg, err := config.Parse(nil)
+	cfg, err := config.Parse(t.Context(), []byte(linearProvider(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +41,11 @@ func TestForgetMissing(t *testing.T) {
 	}
 	for name, r := range d.runners {
 		if want := name == "linear"; r.d.ForgetMissing != want {
-			t.Errorf("built-in %s: ForgetMissing %v, want %v", name, r.d.ForgetMissing, want)
+			t.Errorf("%s: ForgetMissing %v, want %v", name, r.d.ForgetMissing, want)
 		}
+	}
+	if _, ok := d.runners["linear"]; !ok {
+		t.Error("no linear source from the provider")
 	}
 
 	for _, tc := range []struct {

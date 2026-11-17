@@ -172,9 +172,18 @@ func TestMoveToSameID(t *testing.T) {
 	}
 }
 
-// A Linear issue binds to the one workspace whose branch names it, in any
-// repo, and only with LinearBranch on.
-func TestLinearBranchBinding(t *testing.T) {
+// linearBranch is the branch pattern kelpie-linear describes.
+func linearBranch(t *testing.T) core.BranchPattern {
+	p, err := core.NewBranchPattern("linear:{id}", `(?i)(?:^|[^a-z0-9]){id}(?:$|[^0-9])`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A provider's subject binds to the one workspace whose branch names it, in
+// any repo, and only while that provider's branch patterns are in use.
+func TestProviderBranchBinding(t *testing.T) {
 	st := state.NewMemory()
 	b := New(st, false)
 	b.SetWorkspaces("herdr", []host.Workspace{
@@ -184,24 +193,34 @@ func TestLinearBranchBinding(t *testing.T) {
 	})
 	ev := core.Event{Subject: "linear:ENG-123"}
 	if got := b.Resolve(ev); got != nil {
-		t.Fatalf("bound with LinearBranch off: %+v", got)
+		t.Fatalf("bound without branch patterns: %+v", got)
 	}
-	b.LinearBranch = true
+	b.Branches = []core.BranchPattern{linearBranch(t)}
 	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p1" || !got[0].New || got[0].Binding.Via != "branch" {
 		t.Fatalf("resolve: %+v", got)
 	}
+	// The next event keeps the binding rather than making it again, which
+	// would repeat the note on why the workspace hears about it.
+	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p1" || got[0].New {
+		t.Fatalf("second resolve should reuse the binding: %+v", got)
+	}
 	// PRs still need binders.branch.
 	if got := b.Resolve(core.Event{Subject: "github:acme/api#1", Bind: map[string]string{"repo": "acme/api", "branch": "main"}}); got != nil {
-		t.Fatalf("PR bound by LinearBranch: %+v", got)
+		t.Fatalf("PR bound by a provider's branch pattern: %+v", got)
+	}
+	// The binding follows the branch: after a checkout of another branch the
+	// workspace no longer gets the issue.
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Branch: "main"}})
+	if got := b.Resolve(ev); got != nil {
+		t.Fatalf("bound after a checkout of another branch: %+v", got)
 	}
 	// The same tie-break as for PRs: the agent's pane, not the shell next to it.
 	b.SetWorkspaces("herdr", []host.Workspace{
 		{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"},
 		{Host: "herdr", ID: "w1:p2", Branch: "matthias/eng-123-fix-auth", Agent: true},
 	})
-	b.Unbind(ev.Subject, "w1:p1")
 	if got := b.Resolve(ev); len(got) != 1 || got[0].Workspace.ID != "w1:p2" {
-		t.Fatalf("agent pane not preferred for a Linear issue: %+v", got)
+		t.Fatalf("agent pane not preferred for a provider's subject: %+v", got)
 	}
 	// hc cannot tell whether its terminal runs an agent, so herdr's agent
 	// does not beat it: ambiguous, until one of them leaves the branch.
@@ -215,18 +234,10 @@ func TestLinearBranchBinding(t *testing.T) {
 		t.Fatalf("hc terminal alone on the branch: %+v", got)
 	}
 	b.SetWorkspaces("hc", nil)
-	// binders.branch alone does not turn the Linear binder on.
+	// binders.branch alone does not bind a provider's subjects.
 	b2 := New(state.NewMemory(), true)
 	b2.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1", Branch: "matthias/eng-123-fix-auth"}})
 	if got := b2.Resolve(ev); got != nil {
-		t.Fatalf("bound by binders.branch with LinearBranch off: %+v", got)
-	}
-	for branch, want := range map[string]bool{
-		"eng-123": true, "ENG-123-x": true, "u/eng-123": true, "feature_eng-123_x": true,
-		"eng-1234": false, "xeng-123": false, "eng-12": false, "": false,
-	} {
-		if got := linearBranch("ENG-123").MatchString(branch); got != want {
-			t.Errorf("branch %q matches ENG-123: %v, want %v", branch, got, want)
-		}
+		t.Fatalf("bound by binders.branch without the provider's patterns: %+v", got)
 	}
 }

@@ -47,17 +47,12 @@ func New(s config.Source) (*CLI, error) {
 	if s.Conditional && (len(s.Run) < 3 || s.Run[0] != "gh" || s.Run[1] != "api" || slices.Contains(s.Run, "--paginate")) {
 		return nil, fmt.Errorf("source %s: conditional needs run: [gh, api, <endpoint>, ...] without --paginate", s.Name)
 	}
-	if s.Auth != nil {
-		// A copy, so the default stdin does not leak into the shared config.
-		a := *s.Auth
-		in, known := auth.Lookup(a.Name)
-		a.Stdin = cmp.Or(a.Stdin, in.Stdin)
-		s.Auth = &a
+	if a := s.Auth; a != nil {
+		// config.Parse fills in the stdin of the short form from the
+		// provider's credential, and refuses a name no provider has.
 		switch {
 		case a.Name == "":
-			return nil, fmt.Errorf("source %s: auth needs a name, one of %s", s.Name, strings.Join(auth.Names(), ", "))
-		case !known:
-			return nil, fmt.Errorf("source %s: auth %q is not an integration kelpie holds credentials for; one of %s", s.Name, a.Name, strings.Join(auth.Names(), ", "))
+			return nil, fmt.Errorf("source %s: auth needs a name", s.Name)
 		case !strings.Contains(a.Stdin, "{token}"):
 			return nil, fmt.Errorf("source %s: auth stdin needs {token}, or the credential never reaches the command", s.Name)
 		case s.Stdin != "":

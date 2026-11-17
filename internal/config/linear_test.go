@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -51,15 +52,56 @@ func linearPolls(t *testing.T, steps []linearStep) [][]byte {
 	return polls
 }
 
+// linearConfig registers the describe output kelpie-linear embeds, without
+// building the binary.
+func linearConfig(t *testing.T) *config.Config {
+	t.Helper()
+	path, err := filepath.Abs("../../cmd/kelpie-linear/describe.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Parse(t.Context(), []byte(`providers: {linear: {command: [sh, -c, "cat '`+path+`'"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skipped) > 0 || len(cfg.Warnings) > 0 {
+		t.Fatalf("skipped %v, warnings %v", cfg.Skipped, cfg.Warnings)
+	}
+	return cfg
+}
+
+// The Linear sources come from the provider, with its credential's curl
+// header line for the short form auth: linear.
+func TestLinearProvider(t *testing.T) {
+	cfg := linearConfig(t)
+	for _, name := range []string{"linear", "linear-issue"} {
+		src, ok := cfg.Source(name)
+		if !ok || cfg.From[name] != "linear" {
+			t.Fatalf("%s: %v, from %q", name, ok, cfg.From[name])
+		}
+		if want := `header = "Authorization: {token}"`; src.Auth == nil || src.Auth.Stdin != want {
+			t.Errorf("%s: auth %+v, want stdin %q", name, src.Auth, want)
+		}
+	}
+	d, _ := cfg.Provider("linear")
+	if !d.Claims("https://linear.app/acme/issue/ENG-1/x") || !d.Claims("ENG-1") || d.Claims("acme/api") {
+		t.Error("targets")
+	}
+	plain, err := config.Parse(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := plain.Source("linear"); ok {
+		t.Error("linear without its provider")
+	}
+}
+
 // A completed issue that opens again reports it, whether it goes back to
 // the status it had or to another, while still in the list or after it
 // aged out of it. The snapshot keeps the last open status, so status.changed
 // alone misses a reopen to the same status.
 func TestLinearReopen(t *testing.T) {
-	cfg, err := config.Parse(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := linearConfig(t)
 	for _, name := range []string{"linear", "linear-issue"} {
 		src, _ := cfg.Source(name)
 		if !slices.ContainsFunc(src.Transitions, func(tr config.Transition) bool { return tr.Kind == "state.reopened" }) {

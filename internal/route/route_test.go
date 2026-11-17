@@ -172,3 +172,16 @@ func TestDropMe(t *testing.T) {
 		}
 	}
 }
+
+// A subject bound by a provider's branch pattern names the ID the branch
+// carries, whatever the provider's prefix.
+func TestRenderProviderBranchBinding(t *testing.T) {
+	got := Render("[kelpie]", []item{{
+		ev:    core.Event{Subject: "acme:A-7", Kind: "status.changed", Summary: "Todo → Done"},
+		bd:    core.Binding{Via: "branch"},
+		isNew: true,
+	}})
+	if want := "  (bound to this workspace because its branch names A-7)\n"; !strings.Contains(got, want) {
+		t.Errorf("got:\n%s\nwant a line %q", got, want)
+	}
+}
