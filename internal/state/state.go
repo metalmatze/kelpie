@@ -29,6 +29,9 @@ type State interface {
 	// one subject, and each gets its own delivery.
 	Binding(s core.Subject, workspace string) (core.Binding, bool)
 	SetBinding(b core.Binding)
+	// DeleteBinding also forgets every snapshot of s once no workspace binds
+	// it anymore, so a later watch starts from a fresh baseline instead of
+	// reporting what changed while nobody watched.
 	DeleteBinding(s core.Subject, workspace string)
 	// Bindings lists the bindings of one subject, by workspace.
 	Bindings(s core.Subject) []core.Binding
@@ -163,10 +166,19 @@ func (m *Memory) DeleteBinding(s core.Subject, workspace string) {
 	defer m.mu.Unlock()
 	k := bindingKey{s, workspace}
 	b, ok := m.bindings[k]
+	if !ok {
+		return
+	}
 	delete(m.bindings, k)
-	if ok && b.Via == "explicit" {
+	if b.Via == "explicit" {
 		m.saveWatches()
 	}
+	for other := range m.bindings {
+		if other.subject == s {
+			return
+		}
+	}
+	maps.DeleteFunc(m.snapshots, func(k snapshotKey, _ map[string]any) bool { return k.subject == s })
 }
 
 func (m *Memory) Bindings(s core.Subject) []core.Binding {

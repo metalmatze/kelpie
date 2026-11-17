@@ -329,9 +329,22 @@ func (d *daemon) startWatches(subject core.Subject) {
 		if !ok {
 			continue
 		}
-		r.a.Watch(d.ctx, core.Observation{Subject: subject, Fields: fields}, d.observer(r), func([]core.Observation, error) bool {
+		r.a.Watch(d.ctx, core.Observation{Subject: subject, Fields: fields}, d.watchObserver(r, subject), func([]core.Observation, error) bool {
 			return len(d.binder.Bindings(subject)) > 0
 		})
+	}
+}
+
+// watchObserver drops what a loop observes once nobody watches its subject.
+// The loop polls once more before it sees that, up to every later, and the
+// snapshot that poll stored would be what a later watch diffs against.
+func (d *daemon) watchObserver(r *runner, subject core.Subject) func([]core.Observation) {
+	observe := d.observer(r)
+	return func(obs []core.Observation) {
+		if len(d.binder.Bindings(subject)) == 0 {
+			return
+		}
+		observe(obs)
 	}
 }
 
@@ -342,7 +355,8 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 	}
 	// One poll up front, so a typo or a PR you cannot read fails here, at the
 	// command, instead of as a warning in the daemon log every tick.
-	if _, err := d.pollSubject(ctx, subject, false, true); err != nil {
+	_, polls, err := d.pollSubject(ctx, subject, false, true)
+	if err != nil {
 		return control.WatchResponse{}, err
 	}
 	ws, err := d.workspace(req.Workspace)
@@ -355,9 +369,19 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 			resp.Others = append(resp.Others, bd.Workspace)
 		}
 	}
+	unwatched := len(d.binder.Bindings(subject)) == 0
 	// Watching again from the same workspace keeps the original time.
 	if _, ok := d.binder.Binding(subject, ws.ID); !ok {
 		d.binder.Bind(core.Binding{Subject: subject, Workspace: ws.ID, Via: "explicit", Since: time.Now()})
+	}
+	// The last watch ending forgot the subject's snapshots, and the loop of
+	// that watch, which startWatches joins instead of replacing, may sleep up
+	// to every before its next poll. The up-front poll is the baseline, so
+	// nothing that changes in between becomes a silent one.
+	if unwatched {
+		for _, p := range polls {
+			d.observer(p.r)(p.obs)
+		}
 	}
 	d.startWatches(subject)
 	d.refreshBadges()
@@ -365,14 +389,22 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 	return resp, nil
 }
 
+// polled is what one source observed in a pollSubject call.
+type polled struct {
+	r   *runner
+	obs []core.Observation
+}
+
 // pollSubject runs every for_each.subjects source that handles subject once
-// and returns the fetch command of the first observation. With observe, the
+// and returns the fetch command of the first observation, and what each
+// source observed. With observe, the
 // observations go through the diff like a tick of the watch loop, so pending
 // changes are routed now. With refuse, a source's refuse expression can turn
 // the poll into an error, for a watch that would never see a change.
-func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe, refuse bool) ([]string, error) {
+func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe, refuse bool) ([]string, []polled, error) {
 	matched := false
 	var fetch []string
+	var polls []polled
 	for _, r := range d.runners {
 		if r.pattern == nil {
 			continue
@@ -384,15 +416,16 @@ func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe,
 		matched = true
 		_, obs, err := r.a.Once(ctx, &core.Observation{Subject: subject, Fields: fields})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if refuse && r.refuse != nil {
 			for _, o := range obs {
 				if why, err := r.refuse.Eval(o.Fields, nil); err == nil && why != nil && why != "" {
-					return nil, fmt.Errorf("not watching %s: %v", subject, why)
+					return nil, nil, fmt.Errorf("not watching %s: %v", subject, why)
 				}
 			}
 		}
+		polls = append(polls, polled{r, obs})
 		if observe {
 			d.observer(r)(obs)
 		}
@@ -401,9 +434,9 @@ func (d *daemon) pollSubject(ctx context.Context, subject core.Subject, observe,
 		}
 	}
 	if !matched {
-		return nil, fmt.Errorf("no source watches subjects like %s", subject)
+		return nil, nil, fmt.Errorf("no source watches subjects like %s", subject)
 	}
-	return fetch, nil
+	return fetch, polls, nil
 }
 
 func (d *daemon) workspace(id string) (host.Workspace, error) {
@@ -427,7 +460,7 @@ func (d *daemon) Remind(ctx context.Context, req control.RemindRequest) (core.Re
 		if r.Subject, err = core.ParseSubject(string(req.Subject)); err != nil {
 			return core.Reminder{}, err
 		}
-		if _, err := d.pollSubject(ctx, r.Subject, false, false); err != nil {
+		if _, _, err := d.pollSubject(ctx, r.Subject, false, false); err != nil {
 			return core.Reminder{}, err
 		}
 	}
@@ -463,7 +496,7 @@ func (d *daemon) fireReminder(r core.Reminder, late time.Duration) {
 		ev.Subject = core.Subject("reminder:" + r.ID)
 	} else {
 		ctx, cancel := context.WithTimeout(d.ctx, time.Minute)
-		fetch, err := d.pollSubject(ctx, r.Subject, true, false)
+		fetch, _, err := d.pollSubject(ctx, r.Subject, true, false)
 		cancel()
 		if err != nil {
 			slog.Warn("reminder: polling its subject failed", "id", r.ID, "subject", r.Subject, "err", err)

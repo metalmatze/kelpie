@@ -140,6 +140,38 @@ func TestAwaitedHostKeepsBindings(t *testing.T) {
 	}
 }
 
+// A pane whose ID changes keeps its watches and what kelpie saw of them.
+func TestMoveKeepsSnapshots(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	sub := core.Subject("github-release:acme/api")
+	b.Bind(core.Binding{Subject: sub, Workspace: "w1:p1", Via: "explicit"})
+	st.SetSnapshot("github-release", sub, map[string]any{"latest": "2026-11-01T00:00:00Z"})
+
+	b.Move("w1:p1", host.Workspace{Host: "herdr", ID: "w1:p2"})
+	if _, ok := st.Binding(sub, "w1:p2"); !ok {
+		t.Fatal("binding not moved")
+	}
+	if _, ok := st.Snapshot("github-release", sub); !ok {
+		t.Fatal("snapshot forgotten by a move")
+	}
+}
+
+// A move that keeps the pane ID keeps its watches.
+func TestMoveToSameID(t *testing.T) {
+	st := state.NewMemory()
+	b := New(st, false)
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	sub := core.Subject("github-release:acme/api")
+	b.Bind(core.Binding{Subject: sub, Workspace: "w1:p1", Via: "explicit"})
+
+	b.Move("w1:p1", host.Workspace{Host: "herdr", ID: "w1:p1"})
+	if _, ok := st.Binding(sub, "w1:p1"); !ok {
+		t.Fatal("binding lost by a move to the same ID")
+	}
+}
+
 // A Linear issue binds to the one workspace whose branch names it, in any
 // repo, and only with LinearBranch on.
 func TestLinearBranchBinding(t *testing.T) {
