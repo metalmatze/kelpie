@@ -1,0 +1,616 @@
+# What kelpie needs to run the GitHub integration: printed by kelpie-github
+# describe, layered under the person's config.yaml by kelpie. The sources run
+# gh, so gh's own login is the credential and kelpie keeps none.
+kelpie: 1
+name: github
+
+# The login gh acts as, which "@me" in rules.ignore_actors stands for, so the
+# agent does not hear about its own comments and pushes.
+me: [me]
+
+# What a person pastes about GitHub: any github.com URL, owner/repo#123 or
+# owner/repo. An org alone is a bare word that any provider's ID could be, so
+# it needs the name: kelpie watch github acme. Kept in step with parse in
+# main.go.
+targets:
+  - '^https?://github\.com/'
+  - '^[\w.-]+/[\w.-]+(?:#\d+)?$'
+
+# jq definitions the GitHub sources share.
+defs: |
+  # GraphQL drops the [bot] suffix from a bot's login; the rules need it to
+  # tell cursor[bot] from a person.
+  def login: if . == null then "" elif .__typename == "Bot" then "\(.login)[bot]" else .login end;
+
+  # Pull requests of a github-issue observation that $old did not have yet,
+  # or did not have merged yet.
+  def prs_new($old): ($old.prs // [] | map(.ref)) as $seen | [.prs[] | select(.ref as $r | $seen | index($r) | not)];
+  def prs_merged($old): ([$old.prs // [] | .[] | select(.state == "MERGED") | .ref]) as $seen
+    | [.prs[] | select(.state == "MERGED" and (.ref as $r | $seen | index($r) | not))];
+
+  # Tags of the full releases of a github-release observation published after
+  # $old.latest, newest first.
+  def releases_new($old): [.releases[] | select(.published_at > ($old.latest // ""))] | sort_by(.published_at) | reverse | map(.tag);
+
+  # Check contexts of a commit, bucketed like gh pr checks, keeping only the
+  # newest of re-runs so a check that failed and then passed on re-run is not
+  # failed. Only required checks decide pass or fail; optional failures, such
+  # as a DCO check waiting for a sign-off, are listed apart. A repo without
+  # required checks treats all as required.
+  def checks_summary:
+    def bucket:
+      if .__typename == "StatusContext" then {SUCCESS: "pass", ERROR: "fail", FAILURE: "fail"}[.state] // "pending"
+      elif .status != "COMPLETED" then "pending"
+      else {SUCCESS: "pass", NEUTRAL: "pass", SKIPPED: "skip", CANCELLED: "cancel"}[.conclusion] // "fail" end;
+    [.[] | {
+      key: [.checkSuite.workflowRun.workflow.name, (.name // .context)],
+      at: (.startedAt // .createdAt // ""),
+      name: ((.name // .context) + if .conclusion == "ACTION_REQUIRED" then " (action required)" else "" end),
+      required: .isRequired,
+      bucket: bucket
+    }] | group_by(.key) | map(max_by(.at))
+    | (any(.[]; .required) | not) as $all
+    | map(select(.required or $all)) as $req
+    | ([.[] | select(.bucket == "pending")] | length) as $pending
+    | [$req[] | select(.bucket == "fail") | .name] as $failed
+    | {
+        pending: $pending,
+        failed: $failed,
+        passed: ([$req[] | select(.bucket == "pass")] | length),
+        optional_failed: (if $all then [] else [.[] | select((.required | not) and .bucket == "fail") | .name] end),
+        state: (if length == 0 then "NONE" elif $pending > 0 then "PENDING" elif ($failed | length) > 0 then "FAILURE" else "SUCCESS" end)
+      };
+
+sources:
+  # One watched PR: kelpie watch github <pr-url> starts this loop for that PR only,
+  # until it is merged or closed or the pane goes away. gh api graphql, not gh
+  # pr view: gh pr view drops the [bot] suffix and the actor type, so
+  # cursor[bot] would be indistinguishable from a person in the rules.
+  - name: github-pr
+    adapter: cli
+    every: 30s
+    for_each: { subjects: "github:{owner}/{name}#{number}" }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      fragment author on Actor { login __typename }
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            number url title body state isDraft baseRefName mergeable reviewDecision
+            autoMergeRequest { enabledAt }
+            labels(first: 50) { nodes { name } }
+            reviewRequests(first: 50) { nodes { requestedReviewer {
+              ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug }
+            } } }
+            comments(last: 1) { totalCount nodes { author { ...author } } }
+            reviews(last: 1) { totalCount nodes { state author { ...author } } }
+            commits(last: 1) { nodes { commit {
+              oid
+              authors(first: 1) { nodes { user { login } } }
+              statusCheckRollup { state contexts(first: 100) { nodes {
+                __typename
+                ... on CheckRun {
+                  name status conclusion startedAt
+                  isRequired(pullRequestNumber: $number)
+                  checkSuite { workflowRun { workflow { name } } }
+                }
+                ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
+              } } }
+            } } }
+          }
+        }
+      }
+    # The title and description are stored to detect edits but never enter a
+    # prompt: summaries carry only states, counts, logins and branch names.
+    map: |
+      .data.repository.pullRequest | .commits.nodes[0].commit as $commit | {
+        url: .url,
+        fields: {
+          number, title, body, state, isDraft, mergeable, reviewDecision,
+          owner: $parent.owner, name: $parent.name,
+          repo: "\($parent.owner)/\($parent.name)",
+          base: .baseRefName,
+          head: $commit.oid,
+          pusher: ($commit.authors.nodes[0].user.login // ""),
+          # Required checks only, like github-checks: GitHub's rollup state turns
+          # FAILURE on any failed check, even an optional one, and stays
+          # FAILURE while the rest still run.
+          checks: ([$commit.statusCheckRollup.contexts.nodes[]?] | checks_summary.state),
+          auto_merge: (.autoMergeRequest != null),
+          labels: ([.labels.nodes[].name] | sort),
+          review_requests: ([.reviewRequests.nodes[].requestedReviewer | (.login // .slug)] | sort),
+          comments: .comments.totalCount,
+          last_commenter: (.comments.nodes[0].author | login),
+          reviews: .reviews.totalCount,
+          last_review: { state: (.reviews.nodes[0].state // ""), author: (.reviews.nodes[0].author | login) }
+        },
+        fetch: ["gh", "pr", "view", (.number | tostring), "-R", "\($parent.owner)/\($parent.name)", "--comments"]
+      }
+    # The pane's sidebar label, as herdr's $kelpie token: #482 ✓ approved.
+    badge: |
+      "#\(.number)"
+      + ({PENDING: " ⋯", SUCCESS: " ✓", FAILURE: " ✗"}[.checks] // "")
+      + (if .isDraft then " draft"
+         else {APPROVED: " approved", CHANGES_REQUESTED: " changes requested"}[.reviewDecision // ""] // "" end)
+      + (if .mergeable == "CONFLICTING" then " conflict" else "" end)
+    # Checks transitions live in github-checks, which this source starts.
+    transitions:
+      # Count reviews, not reviewDecision: a second "changes requested" or a
+      # comment-only review (also every reply in a review thread) leaves the
+      # decision unchanged.
+      - field: reviews
+        increased: true
+        kind: review.submitted
+        actor: .last_review.author
+        summary: '"\(.last_review.state | ascii_downcase | gsub("_"; " ")) by \(.last_review.author)"'
+      - field: comments
+        increased: true
+        kind: comment.added
+        actor: .last_commenter
+        summary: '"\(.comments - $old.comments) new, latest by \(.last_commenter)"'
+      - field: reviewDecision
+        changed: true
+        kind: review.decision
+        summary: '"review decision is now \(.reviewDecision // "none" | ascii_downcase | gsub("_"; " "))"'
+      - field: review_requests
+        changed: true
+        kind: review.requested
+        summary: '(.review_requests - $old.review_requests) as $added | if ($added | length) > 0 then "review requested from \($added | join(", "))" else "review requests now: \(.review_requests | join(", ") | if . == "" then "none" else . end)" end'
+      # Your own pushes (the agent's, or yours from another machine) are
+      # dropped by ignore_actors @me like everything else you do.
+      - field: head
+        changed: true
+        kind: commits.pushed
+        actor: .pusher
+        summary: '"new commits pushed by \(.pusher), head \(.head[:7])"'
+        fetch: '["gh", "pr", "view", (.number | tostring), "-R", .repo, "--json", "commits"]'
+      - field: title
+        changed: true
+        kind: title.changed
+        summary: '"title edited"'
+        fetch: '["gh", "pr", "view", (.number | tostring), "-R", .repo, "--json", "title"]'
+      - field: body
+        changed: true
+        kind: description.changed
+        summary: '"description edited"'
+        fetch: '["gh", "pr", "view", (.number | tostring), "-R", .repo, "--json", "body"]'
+      - field: base
+        changed: true
+        kind: base.changed
+        summary: '"base branch changed from \($old.base) to \(.base)"'
+      - field: labels
+        changed: true
+        kind: labels.changed
+        summary: '"labels now: \(.labels | join(", ") | if . == "" then "none" else . end)"'
+      - field: isDraft
+        to: false
+        kind: pr.ready
+        summary: '"marked ready for review"'
+      - field: isDraft
+        to: true
+        kind: pr.draft
+        summary: '"converted to draft"'
+      - field: auto_merge
+        changed: true
+        kind: automerge.changed
+        summary: 'if .auto_merge then "auto-merge enabled" else "auto-merge disabled" end'
+      - field: mergeable
+        to: CONFLICTING
+        ignore: [UNKNOWN]
+        kind: merge.conflict
+        summary: '"merge conflict with \(.base)"'
+      - field: state
+        to: MERGED
+        kind: state.merged
+        urgent: true
+        terminal: true
+        summary: '"merged; kelpie stops watching"'
+      - field: state
+        to: CLOSED
+        kind: state.closed
+        terminal: true
+        summary: '"closed without merging; kelpie stops watching"'
+
+  # What gh pr checks --watch does, as a source: poll one PR every few seconds
+  # while its checks run (checks_summary in defs). GraphQL rather than gh pr
+  # checks --json, which lacks isRequired. Started while github-pr sees checks
+  # PENDING; CI that starts and finishes between two github-pr polls is never
+  # seen and reports nothing. Optional failures ride along in the final
+  # message for the agent to pass on.
+  - name: github-checks
+    adapter: cli
+    every: 15s
+    for_each: { source: github-pr, while: { field: checks, equals: PENDING } }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+              __typename
+              ... on CheckRun {
+                name status conclusion startedAt
+                isRequired(pullRequestNumber: $number)
+                checkSuite { workflowRun { workflow { name } } }
+              }
+              ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
+            } } } } } }
+          }
+        }
+      }
+    map: |
+      [.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]?] | checks_summary
+      | { fields: {
+          number: $parent.number, repo: $parent.repo,
+          pending, passed, optional_failed,
+          failed: (.failed | length),
+          failed_checks: .failed,
+          # Counts only while CI runs, so the last failure, arriving with the
+          # end of CI, is reported once, by the final checks.failed.
+          failed_early: (if .pending > 0 then (.failed | length) else 0 end),
+          checks: .state
+      } }
+    transitions:
+      # Fires on the first required failure while others still run, like
+      # --fail-fast, so the agent can start on it early.
+      - field: failed_early
+        increased: true
+        kind: checks.failed
+        urgent: true
+        summary: '"\(.failed) failed (\(.pending) still running): \(.failed_checks[:5] | join(", "))"'
+        fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+      - field: checks
+        to: FAILURE
+        kind: checks.failed
+        urgent: true
+        summary: '"CI finished, \(.failed) required failed: \(.failed_checks[:5] | join(", "))\(if (.optional_failed | length) > 0 then "; optional failing: \(.optional_failed[:5] | join(", "))" else "" end)"'
+        fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+      - field: checks
+        to: SUCCESS
+        kind: checks.passed
+        summary: '"required checks passed (\(.passed))\(if (.optional_failed | length) > 0 then "; optional failing: \(.optional_failed[:5] | join(", "))" else "" end)"'
+        fetch: '["gh", "pr", "checks", (.number | tostring), "-R", .repo]'
+
+  # One watched issue: kelpie watch github <issue-url>, until it is closed or
+  # the pane goes away. A subject of its own, not github:, because GitHub
+  # numbers issues and PRs in one sequence and github-pr runs for every
+  # github: subject. Each change is attributed to the newest timeline event
+  # of its kind, so that ignore_actors drops your own labels, comments and
+  # edits; two kinds of change within one poll share that actor, as on PRs.
+  - name: github-issue
+    adapter: cli
+    every: 60s
+    for_each: { subjects: "github-issue:{owner}/{name}#{number}" }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      fragment author on Actor { login __typename }
+      fragment pr on PullRequest { number state author { ...author } repository { nameWithOwner } }
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          issue(number: $number) {
+            number url title body state stateReason
+            editor { ...author }
+            milestone { title }
+            labels(first: 50) { nodes { name } }
+            assignees(first: 50) { nodes { login } }
+            comments(last: 1) { totalCount nodes { author { ...author } } }
+            closedByPullRequestsReferences(first: 25, includeClosedPrs: true) { nodes { ...pr } }
+            refs: timelineItems(last: 50, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent {
+              willCloseTarget source { __typename ...pr }
+            } } }
+            stateEvent: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) { nodes {
+              ... on ClosedEvent { actor { ...author } closer { __typename ... on PullRequest { number } ... on Commit { abbreviatedOid } } }
+              ... on ReopenedEvent { actor { ...author } }
+            } }
+            labelEvent: timelineItems(last: 1, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) { nodes {
+              ... on LabeledEvent { actor { ...author } } ... on UnlabeledEvent { actor { ...author } }
+            } }
+            assignEvent: timelineItems(last: 1, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT]) { nodes {
+              ... on AssignedEvent { actor { ...author } } ... on UnassignedEvent { actor { ...author } }
+            } }
+            renameEvent: timelineItems(last: 1, itemTypes: [RENAMED_TITLE_EVENT]) { nodes { ... on RenamedTitleEvent { actor { ...author } } } }
+            milestoneEvent: timelineItems(last: 1, itemTypes: [MILESTONED_EVENT, DEMILESTONED_EVENT]) { nodes {
+              ... on MilestonedEvent { actor { ...author } } ... on DemilestonedEvent { actor { ...author } }
+            } }
+          }
+        }
+      }
+    # Title, description and milestone title are stored to detect edits; only
+    # the milestone title, like label names, enters a prompt. PRs are those
+    # that will close the issue (closing keyword or linked by hand) and those
+    # that mention it, by ref: #12, or owner/repo#12 from another repo.
+    map: |
+      .data.repository.issue as $i
+      | "\($parent.owner)/\($parent.name)" as $repo
+      | ([$i.closedByPullRequestsReferences.nodes[] | {pr: ., closes: true}]
+         + [$i.refs.nodes[] | select(.source.__typename == "PullRequest") | {pr: .source, closes: .willCloseTarget}])
+      | map({
+          ref: (if (.pr.repository.nameWithOwner | ascii_downcase) == ($repo | ascii_downcase) then "#\(.pr.number)" else "\(.pr.repository.nameWithOwner)#\(.pr.number)" end),
+          repo: .pr.repository.nameWithOwner, number: .pr.number, state: .pr.state,
+          author: (.pr.author | login), closes
+        })
+      | group_by(.ref) | map(.[0] + {closes: any(.[]; .closes)}) as $prs
+      | $i | {
+        url: .url,
+        fields: {
+          number, title, body, state,
+          reason: (.stateReason // ""),
+          repo: $repo,
+          labels: ([.labels.nodes[].name] | sort),
+          assignees: ([.assignees.nodes[].login] | sort),
+          milestone: (.milestone.title // ""),
+          comments: .comments.totalCount,
+          last_commenter: (.comments.nodes[0].author | login),
+          editor: (.editor | login),
+          state_actor: (.stateEvent.nodes[0].actor | login),
+          closer: (.stateEvent.nodes[0].closer | if .__typename == "PullRequest" then "PR #\(.number)" elif .__typename == "Commit" then "commit \(.abbreviatedOid)" else "" end),
+          labeler: (.labelEvent.nodes[0].actor | login),
+          assigner: (.assignEvent.nodes[0].actor | login),
+          renamer: (.renameEvent.nodes[0].actor | login),
+          milestoner: (.milestoneEvent.nodes[0].actor | login),
+          prs: $prs,
+          linked: ($prs | length),
+          merged: ([$prs[] | select(.state == "MERGED")] | length)
+        },
+        fetch: ["gh", "issue", "view", (.number | tostring), "-R", $repo, "--comments"]
+      }
+    # issue #57 → #60: the PRs that will close it, unless closed unmerged.
+    badge: |
+      "issue #\(.number)"
+      + (if .state == "CLOSED" then " closed" else "" end)
+      + ([.prs[] | select(.closes and .state != "CLOSED") | .ref] | if length > 0 then " → " + join(" ") else "" end)
+    transitions:
+      - field: comments
+        increased: true
+        kind: comment.added
+        actor: .last_commenter
+        summary: '"\(.comments - $old.comments) new, latest by \(.last_commenter)"'
+      - field: labels
+        changed: true
+        kind: labels.changed
+        actor: .labeler
+        summary: '"labels now: \(.labels | join(", ") | if . == "" then "none" else . end)"'
+      - field: assignees
+        changed: true
+        kind: assignees.changed
+        actor: .assigner
+        summary: '"assignees now: \(.assignees | join(", ") | if . == "" then "none" else . end)"'
+      - field: milestone
+        changed: true
+        kind: milestone.changed
+        actor: .milestoner
+        summary: 'if .milestone == "" then "milestone removed" else "milestone now: \(.milestone)" end'
+      - field: title
+        changed: true
+        kind: title.changed
+        actor: .renamer
+        summary: '"title edited"'
+        fetch: '["gh", "issue", "view", (.number | tostring), "-R", .repo, "--json", "title"]'
+      - field: body
+        changed: true
+        kind: description.changed
+        actor: .editor
+        summary: '"description edited"'
+        fetch: '["gh", "issue", "view", (.number | tostring), "-R", .repo, "--json", "body"]'
+      # A PR the agent opened itself is dropped as yours, unless the new PRs
+      # have several authors.
+      - field: linked
+        increased: true
+        kind: pr.linked
+        actor: '[prs_new($old)[].author] | unique | if length == 1 then .[0] else "" end'
+        summary: '"referenced by " + (prs_new($old) | map("PR \(.ref) (\(.state | ascii_downcase)\(if .closes then ", closes this issue" else "" end))") | join(", "))'
+        fetch: 'prs_new($old)[0] | ["gh", "pr", "view", (.number | tostring), "-R", .repo]'
+      - field: merged
+        increased: true
+        kind: pr.merged
+        summary: '(prs_merged($old) | map("PR \(.ref)\(if .closes then " (closes this issue)" else "" end)") | join(", ")) + " merged"'
+        fetch: 'prs_merged($old)[0] | ["gh", "pr", "view", (.number | tostring), "-R", .repo]'
+      - field: state
+        to: OPEN
+        kind: state.reopened
+        actor: .state_actor
+        summary: '"reopened by \(.state_actor)"'
+      # No actor: closing ends the watch, even when you closed it yourself.
+      - field: state
+        to: CLOSED
+        kind: state.closed
+        urgent: true
+        terminal: true
+        summary: '"closed\(if .reason != "" then " as \(.reason | ascii_downcase | gsub("_"; " "))" else "" end) by \(if .closer != "" then .closer else .state_actor end); kelpie stops watching"'
+
+  # One watched workflow run: kelpie watch github <run-url>, until the run
+  # completes. Polls the way gh run watch does: the run and its jobs on every
+  # tick, until the run's status is completed, and a run that has already
+  # completed is refused, not watched. gh run view --json fetches both, with
+  # the same calls gh run watch makes. Every 10 s rather than gh's 3 s: one
+  # tick is three REST calls (run, workflow, jobs), so 3 s would spend about
+  # 3,600 of the 5,000 an hour on a single run. Failure means what it means
+  # to gh: action_required, failure, startup_failure or timed_out; cancelled,
+  # skipped and neutral are not failures.
+  - name: github-run
+    adapter: cli
+    every: 10s
+    for_each: { subjects: "github-run:{owner}/{name}/{id}" }
+    run: [gh, run, view, "{id}", -R, "{owner}/{name}", --json, "status,conclusion,workflowName,attempt,headSha,url,jobs"]
+    # Job and step names come from the repo's workflow file, like check
+    # names; step logs never enter a prompt.
+    map: |
+      def failed: IN("action_required", "failure", "startup_failure", "timed_out");
+      "\($parent.owner)/\($parent.name)" as $repo
+      | [.jobs[] | select(.conclusion | failed) | {
+          id: .databaseId,
+          name: (.name + ([.steps[]? | select(.conclusion | failed) | .name][0] | if . then " (step \(.))" else "" end))
+        }] as $failed
+      | ([.jobs[] | select(.status != "completed")] | length) as $pending
+      | {
+        url: .url,
+        fields: {
+          id: $parent.id, repo: $repo,
+          workflow: .workflowName, status, conclusion, attempt,
+          head: .headSha[:9],
+          jobs: (.jobs | length),
+          pending: $pending,
+          failed: ($failed | length),
+          failed_jobs: [$failed[].name],
+          failed_job: ($failed[0].id // 0),
+          # Counts only while the run goes on, so the failure that ends it is
+          # reported once, by the final run.failed.
+          failed_early: (if .status != "completed" then ($failed | length) else 0 end),
+          outcome: (if .status != "completed" then "running"
+            elif (.conclusion | failed) then "failure"
+            elif .conclusion == "success" or .conclusion == "cancelled" then .conclusion
+            else "other" end)
+        },
+        fetch: ["gh", "run", "view", $parent.id, "-R", $repo]
+      }
+    refuse: 'if .status == "completed" then "run \(.id) (\(.workflow)) has already completed with \u0027\(.conclusion)\u0027" else "" end'
+    # run All ⋯, run All ⋯ ✗ (a job failed, others still run), run All ✓
+    badge: |
+      "run \(.workflow)"
+      + ({running: " ⋯", success: " ✓", failure: " ✗", cancelled: " cancelled"}[.outcome] // "")
+      + (if .outcome == "running" and .failed > 0 then " ✗" else "" end)
+    transitions:
+      # The first failed job while others still run, like gh pr checks
+      # --fail-fast, so the agent can start on it early.
+      - field: failed_early
+        increased: true
+        kind: run.failed
+        urgent: true
+        summary: '"\(.workflow): \(.failed) of \(.jobs) jobs failed (\(.pending) still running): \(.failed_jobs[:5] | join(", "))"'
+        fetch: '["gh", "run", "view", "--job", (.failed_job | tostring), "-R", .repo, "--log-failed"]'
+      - field: outcome
+        to: failure
+        kind: run.failed
+        urgent: true
+        terminal: true
+        summary: '"\(.workflow) completed with \(.conclusion | gsub("_"; " ")) on \(.head): \(.failed_jobs[:5] | join(", ") | if . == "" then "no failed job listed" else . end); kelpie stops watching"'
+        fetch: '["gh", "run", "view", .id, "-R", .repo, "--log-failed"]'
+      - field: outcome
+        to: success
+        kind: run.completed
+        terminal: true
+        summary: '"\(.workflow) succeeded on \(.head) (\(.jobs) jobs); kelpie stops watching"'
+      - field: outcome
+        to: cancelled
+        kind: run.completed
+        terminal: true
+        summary: '"\(.workflow) was cancelled; kelpie stops watching"'
+      - field: outcome
+        to: other
+        kind: run.completed
+        terminal: true
+        summary: '"\(.workflow) completed with \(.conclusion); kelpie stops watching"'
+
+  # GitHub notifications of one repo: kelpie watch github owner/repo. Only
+  # page 1, the 50 most recently updated unread threads, with the last
+  # Last-Modified sent as If-Modified-Since. GitHub answers 304 until a thread
+  # is updated after it, and a 304 costs no rate limit. Every new or updated
+  # thread moves latest, the newest updated_at, forward; reading threads never
+  # does, so a thread rising from page 2 into page 1 is not news. Titles are
+  # other people's text and stay out of the prompt: the summary has counts,
+  # reasons and issue or PR numbers.
+  - name: github-inbox
+    adapter: cli
+    every: 60s            # raised to GitHub's X-Poll-Interval when it asks for longer
+    conditional: true
+    for_each: { subjects: "github-inbox:{owner}/{name}" }
+    run: [gh, api, "repos/{owner}/{name}/notifications"]
+    map: |
+      {
+        fields: {
+          repo: "\($parent.owner)/\($parent.name)",
+          latest: (map(.updated_at) | max),
+          threads: map({
+            updated_at, reason,
+            ref: ((.subject.url // "" | capture("/(pulls|issues)/(?<n>[0-9]+)$") | "#\(.n)") // .subject.type)
+          })
+        },
+        url: "https://github.com/notifications?query=repo%3A\($parent.owner)%2F\($parent.name)",
+        fetch: ["gh", "api", "repos/\($parent.owner)/\($parent.name)/notifications"]
+      }
+    badge: '"\(.repo) 🔔\(.threads | length)"'
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]    # everything read: keep the newest updated_at seen
+        kind: notifications.new
+        summary: &inbox_summary |
+          [.threads[] | select(.updated_at > ($old.latest // ""))] as $new
+          | "\($new | length) new or updated (\($new | group_by(.reason) | map("\(length) \(.[0].reason | gsub("_"; " "))") | join(", "))): \($new[:5] | map(.ref) | join(", "))\(if ($new | length) > 5 then ", ..." else "" end)"
+        fetch: '["gh", "api", "repos/\(.repo)/notifications\(if $old.latest then "?since=\($old.latest)" else "" end)"]'
+
+  # GitHub notifications of every repo of an org or user: kelpie watch github
+  # <org>. There is no notifications endpoint per org, so this reads page 1 of
+  # all your notifications and keeps the org's threads; the rest works like
+  # github-inbox.
+  - name: github-inbox-org
+    adapter: cli
+    every: 60s
+    conditional: true
+    for_each: { subjects: "github-inbox:{owner}" }
+    run: [gh, api, notifications]
+    map: |
+      map(select(.repository.owner.login | ascii_downcase == ($parent.owner | ascii_downcase))) | {
+        fields: {
+          org: ($parent.owner | ascii_downcase),
+          latest: (map(.updated_at) | max),
+          threads: map({
+            updated_at, reason,
+            ref: (.repository.full_name + ((.subject.url // "" | capture("/(pulls|issues)/(?<n>[0-9]+)$") | "#\(.n)") // " \(.subject.type)"))
+          })
+        },
+        url: "https://github.com/notifications?query=org%3A\($parent.owner)",
+        fetch: ["gh", "api", "notifications", "--jq", "[.[] | select(.repository.owner.login | ascii_downcase == \"\($parent.owner | ascii_downcase)\")]"]
+      }
+    badge: '"\(.org) 🔔\(.threads | length)"'
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]
+        kind: notifications.new
+        summary: *inbox_summary
+        fetch: '["gh", "api", "notifications\(if $old.latest then "?since=\($old.latest)" else "" end)", "--jq", "[.[] | select(.repository.owner.login | ascii_downcase == \"\(.org)\")]"]'
+
+  # Full releases of one repo: kelpie watch github <owner/repo>/releases. Every
+  # hour, because releases are rare. Pre-releases and drafts are not news. Page 1
+  # of the releases is ordered by creation, not by publish time, so latest is
+  # the newest published_at of the full releases on it, whichever comes first.
+  # Not conditional: the releases endpoint sends no Last-Modified to send back
+  # as If-Modified-Since. Release names and notes are other people's text and
+  # stay out of the prompt: the summary has the tags. The transition takes no
+  # actor, because releases are often published by bots such as
+  # github-actions[bot], which the ignore_actors rule would drop.
+  - name: github-release
+    adapter: cli
+    every: 1h
+    for_each: { subjects: "github-release:{owner}/{name}" }
+    run: [gh, api, "repos/{owner}/{name}/releases?per_page=30"]
+    map: |
+      [.[] | select((.draft or .prerelease) | not)] as $full | {
+        fields: {
+          repo: "\($parent.owner)/\($parent.name)",
+          latest: ($full | map(.published_at) | max),
+          tag: ($full | max_by(.published_at) | .tag_name),
+          releases: ($full | map({tag: .tag_name, published_at}))
+        },
+        url: "https://github.com/\($parent.owner)/\($parent.name)/releases",
+        fetch: ["gh", "release", "list", "-R", "\($parent.owner)/\($parent.name)", "--exclude-drafts", "--exclude-pre-releases"]
+      }
+    # acme/api 🏷 v1.3.1, or acme/api before its first full release
+    badge: '"\(.repo)\(if .tag then " 🏷 \(.tag)" else "" end)"'
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]    # no full release yet
+        kind: release.new
+        summary: |
+          releases_new($old) as $new
+          | if ($new | length) == 1 then "new release \($new[0])"
+            else "\($new | length) new releases: \($new[:10] | join(", "))\(if ($new | length) > 10 then ", ..." else "" end)" end
+        # The same page the source polls, never one sized to the new
+        # releases: pre-releases and drafts share it and would push new tags
+        # off a shorter page.
+        fetch: |
+          releases_new($old) as $new
+          | if ($new | length) == 1 then ["gh", "release", "view", $new[0], "-R", .repo]
+            else ["gh", "api", "repos/\(.repo)/releases?per_page=30", "--jq", "[.[] | select(.tag_name | IN(\($new | map(tojson) | join(", "))))]"] end
