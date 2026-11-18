@@ -1,6 +1,6 @@
 # kelpie
 
-kelpie types GitHub pull request, issue and workflow run updates, new releases, GitHub notifications, Linear issue updates, and reminders into the terminal of the coding agent that owns them.
+kelpie types GitHub pull request, issue, discussion and workflow run updates, new releases, GitHub notifications, Linear issue updates, and reminders into the terminal of the coding agent that owns them.
 
 ## Use cases
 
@@ -25,6 +25,12 @@ Follow an issue for the agent that works on it. kelpie tells the agent when some
 
 ```sh
 kelpie watch github https://github.com/org/api/issues/17
+```
+
+Follow a discussion for the agent that asked or answered in it. GitHub's notifications leave out discussion comments, so an inbox watch misses them. kelpie tells the agent about new comments, new replies with whose comments they answer, and an answer marked or unmarked. The watch ends when the discussion closes, even if you closed it yourself. An answer does not end it, because the follow-up to an answer often matters more; unwatch it once the agent has what it needs.
+
+```sh
+kelpie watch github https://github.com/org/api/discussions/31
 ```
 
 Follow a GitHub Actions run for the agent that waits on it, such as the deploy a merge starts. This is what `gh run watch` does, kept running in the daemon. kelpie tells the agent about the first failed job and its failing step while other jobs still run, and how the run ended. The watch ends when the run completes. kelpie refuses a run that has already completed and prints its conclusion.
@@ -167,7 +173,7 @@ Before you run `kelpie service install`, stop any daemon from a kelpie build wit
    kelpie daemon
    ```
 
-2. Watch a pull request or an issue. A URL or `owner/repo#N` both work. GitHub numbers issues and PRs in one sequence, so for `owner/repo#N` kelpie asks GitHub which one it is.
+2. Watch a pull request, an issue or a discussion. A URL or `owner/repo#N` both work. GitHub numbers issues, PRs and discussions in one sequence, so for `owner/repo#N` kelpie asks GitHub which one it is.
 
    ```console
    $ kelpie watch github https://github.com/prometheus-community/pyrra/pull/2013
@@ -216,7 +222,7 @@ To stop a watch early, run `kelpie unwatch github <target>` or `kelpie unwatch l
 
 ## How it works
 
-`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, an issue or a notification inbox every 60 seconds, and a repo's releases every hour. For Linear, which has no CLI, the sources that `kelpie-linear` describes run `curl` against Linear's GraphQL API with the key from `kelpie auth login linear`: a watched issue every 60 seconds, and the issues assigned to you every 2 minutes. The daemon runs these itself; it calls `kelpie-linear` only at start. kelpie compares each result with the previous one and turns the differences into events, for example:
+`kelpie daemon` runs `gh` on a timer for every watched subject. By default, it polls a PR every 30 seconds, its checks every 15 seconds while they run, a workflow run every 10 seconds, an issue, a discussion or a notification inbox every 60 seconds, and a repo's releases every hour. For Linear, which has no CLI, the sources that `kelpie-linear` describes run `curl` against Linear's GraphQL API with the key from `kelpie auth login linear`: a watched issue every 60 seconds, and the issues assigned to you every 2 minutes. The daemon runs these itself; it calls `kelpie-linear` only at start. kelpie compares each result with the previous one and turns the differences into events, for example:
 
 - `checks.failed`: a required check failed. `checks.passed`: all required checks passed.
 - `review.submitted` and `comment.added`: someone reviewed or commented.
@@ -224,6 +230,7 @@ To stop a watch early, run `kelpie unwatch github <target>` or `kelpie unwatch l
 - `merge.conflict`: the PR conflicts with its base branch.
 - `state.merged` and `state.closed`: the PR or issue is done, and the watch ends.
 - `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
+- `comment.added`, `reply.added`, `answer.marked` and `answer.unmarked` on a discussion; its `state.closed` ends the watch.
 - `notifications.new`: threads in a watched inbox are new or changed.
 - `release.new`: a watched repo published one or more full releases.
 - `status.changed`, `assignee.changed`, `comment.added` and `blocker.done` on a Linear issue, and `state.completed` or `state.canceled`, which end the watch. `state.reopened` reports an assigned issue that opens again, and reaches the pane on its branch.
@@ -275,6 +282,7 @@ kelpie reports a `kelpie` token on every pane it watches for. The token has one 
 | `draft`, `approved`, `changes requested` | The PR is a draft, or its review decision. |
 | `conflict` | The PR conflicts with its base branch. |
 | `issue #17 → #20` | A watched issue, and the open or merged PRs that will close it. `closed` follows the number of a closed issue. |
+| `discussion #31 answered` | A watched discussion. `answered` and `closed` follow its number. |
 | `owner/repo 🔔22`, `org 🔔22` | Unread notification threads, up to the 50 most recent. |
 | `owner/repo 🏷 v1.3.1` | The newest full release of a watched repo. |
 | `ENG-123 In Review ⛔1` | A watched Linear issue, its status, and how many issues that block it are still open. |
@@ -367,7 +375,7 @@ Unknown keys are errors. kelpie reads the file only at start, so restart the dae
 
 Settings you may want to change are `delivery.debounce`, `delivery.notify.stuck`, and `rules.allow_bots`. The comments in the default file describe the rest.
 
-The config also defines each source as a command (`gh` for GitHub, `curl` for Linear), a jq mapping, and the transitions that become events. A new source needs no Go code. The `github` provider has `github-pr`, `github-checks`, `github-issue`, `github-run`, `github-inbox`, `github-inbox-org`, and `github-release`; the `linear` provider has `linear` and `linear-issue`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, `github-run`, `github-release`, `linear-issue`, and the inbox sources need `--subject`:
+The config also defines each source as a command (`gh` for GitHub, `curl` for Linear), a jq mapping, and the transitions that become events. A new source needs no Go code. The `github` provider has `github-pr`, `github-checks`, `github-issue`, `github-discussion`, `github-run`, `github-inbox`, `github-inbox-org`, and `github-release`; the `linear` provider has `linear` and `linear-issue`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, `github-discussion`, `github-run`, `github-release`, `linear-issue`, and the inbox sources need `--subject`:
 
 ```sh
 kelpie source test github-pr --subject https://github.com/prometheus-community/pyrra/pull/2013
@@ -391,6 +399,6 @@ To stop a provider from binding its issues to panes by branch, set `binders.<pro
 
 ## Status
 
-kelpie works with herdr and Orca. It watches GitHub PRs, issues, workflow runs, releases, and notifications, and Linear issues. It also sends reminders and can run as a service.
+kelpie works with herdr and Orca. It watches GitHub PRs, issues, discussions, workflow runs, releases, and notifications, and Linear issues. It also sends reminders and can run as a service.
 
 [DESIGN.md](DESIGN.md) describes the internals and the longer plan. Parts of it, such as Slack sources, are not built yet. DESIGN.md also lists commands that do not exist yet, such as `kelpie doctor`, `kelpie mcp login`, and `kelpie watch slack`.

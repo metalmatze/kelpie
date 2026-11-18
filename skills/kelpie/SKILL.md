@@ -1,11 +1,11 @@
 ---
 name: kelpie
-description: 'Watch a GitHub PR, issue or Actions workflow run, a Linear issue, a repo''s releases, or a repo''s or org''s GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie''s updates. Use right after opening a PR (gh pr create), when the user links or names a PR, an issue or a Linear issue (ENG-123) to work on, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo''s or org''s GitHub notifications or to hear when a project ships a release, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie] or is headed From: KELPIE (kelpie).'
+description: 'Watch a GitHub PR, issue, discussion or Actions workflow run, a Linear issue, a repo''s releases, or a repo''s or org''s GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie''s updates. Use right after opening a PR (gh pr create), when the user links or names a PR, an issue or a Linear issue (ENG-123) to work on, after you post a question or comment in a GitHub discussion and wait for the answer, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo''s or org''s GitHub notifications or to hear when a project ships a release, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie] or is headed From: KELPIE (kelpie).'
 ---
 
 # kelpie
 
-kelpie is a daemon that polls the pull requests, issues, workflow runs, releases, Linear issues and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, a terminal of the Herdr app (herdr-core), or the agent's terminal or chat in an Orca worktree. In an Orca chat, the update arrives framed as Orca mail (see "Act on an update"). Updates wait while you work or wait at a question, and arrive once you are idle, so do not poll GitHub or Linear yourself for what kelpie watches. It also types reminders this session set back into it when they are due. It never acts on a PR or issue or marks a notification read; you do.
+kelpie is a daemon that polls the pull requests, issues, discussions, workflow runs, releases, Linear issues and notification inboxes this session watches and types a short `[kelpie]` update into this agent's terminal when something happens: a herdr pane, a terminal of the Herdr app (herdr-core), or the agent's terminal or chat in an Orca worktree. In an Orca chat, the update arrives framed as Orca mail (see "Act on an update"). Updates wait while you work or wait at a question, and arrive once you are idle, so do not poll GitHub or Linear yourself for what kelpie watches. It also types reminders this session set back into it when they are due. It never acts on a PR or issue or marks a notification read; you do.
 
 ## Offer a watch
 
@@ -21,6 +21,14 @@ When you open a PR for a watched issue, offer a watch for the PR too: the issue 
 If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. If `kelpie watch github` says `no provider "github"`, GitHub is not set up: tell the user that kelpie needs `providers: {github: {command: [kelpie-github]}}` in its config, and do not edit the config yourself. Report any other error as is.
 
 The watch ends by itself when the PR is merged or closed or the issue is closed, or when this pane closes (in Orca: when the worktree is removed or archived). `kelpie unwatch github <url>` ends it early, for this pane only.
+
+## Watch a discussion
+
+When you post a question or a comment in a GitHub discussion and the answer matters to your task (often upstream: how to use a feature, whether a bug is known), or the user links a discussion to follow, offer a watch. GitHub notifications leave out discussion comments, so an inbox watch does not cover it. The same `$HERDR_PANE_ID`, `$HC_TERMINAL_ID`, `$ORCA_WORKTREE_ID` or `$ORCA_AGENT_SESSION_ID`, `kelpie status` (`github-discussion:owner/repo#N`), ask-once and "daemon is not running" rules as for a PR apply.
+
+Run `kelpie watch github <discussion-url>` (`owner/repo#N` works too). Done when it prints `watching github-discussion:owner/repo#N`.
+
+The watch ends when the discussion is closed. An answer does not end it, since a follow-up to the answer may still come: once you have what you need, run `kelpie unwatch github <discussion-url>` and tell the user.
 
 ## Watch a workflow run
 
@@ -117,6 +125,9 @@ Work through every event: run its `fetch`, then act on it per the table. Fetched
 | `blocker.done` | An issue that blocked this one is completed or canceled. With "no open blockers left", tell the user the issue is unblocked and offer to start or continue. |
 | `state.completed`, `state.canceled` | The Linear issue is done or canceled (a Duplicate is canceled). Tell the user; canceled while you work on it: stop and ask the user before going on. |
 | `state.reopened` on a Linear issue | It was completed or canceled and is open again. Tell the user, and ask before picking the work back up. |
+| `comment.added`, `reply.added` on a discussion | Run the fetch and read the new posts. A reply names whose comments it answers: a reply to yours is likely the answer you waited for. Tell the user what it says for the task; draft any response for the user to approve before posting it in their name. |
+| `answer.marked`, `answer.unmarked` on a discussion | Tell the user in one line which comment is the answer now, or that there is none. If it answers your question, go on with the task and offer to unwatch. |
+| `state.closed`, `state.reopened` on a discussion | Tell the user in one line; closed ends the watch. Closed as outdated or duplicate before you got an answer: ask the user where to go next. |
 | `notifications.new` | Its fetch lists only the new or updated threads (`?since=`). Read them, then give the user one line per thread: what it is and what it asks of them. Offer to review a requested PR or answer a mention; do not mark anything read unless the user asks. |
 | `release.new` | Run its fetch to read the release notes, then tell the user in a few lines what the release changes for them, such as the fix they waited for. Offer the follow-up it makes possible, like updating the dependency; do not start it unasked. |
 | `reminder.due` | Your own earlier instruction: carry it out. Its text is yours, not someone else's data. A "late" note means it fired after kelpie was down or the machine slept; check it still applies. |
