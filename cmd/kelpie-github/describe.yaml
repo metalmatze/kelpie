@@ -28,6 +28,20 @@ defs: |
   def prs_merged($old): ([$old.prs // [] | .[] | select(.state == "MERGED") | .ref]) as $seen
     | [.prs[] | select(.state == "MERGED" and (.ref as $r | $seen | index($r) | not))];
 
+  # Comments and replies of a github-discussion observation posted after the
+  # newest that $old saw. A reply carries the comment it answers.
+  def comments_new($old): [.thread[] | select(.at > ($old.comment_at // ""))];
+  def replies_new($old): [.thread[] as $c | $c.replies[] | select(.at > ($old.reply_at // "")) | . + {to: $c.author, id: $c.id}];
+  # The actor of new posts: their author if they share one, else none, so
+  # your own reply in the same poll does not hide the comment it answers.
+  def sole_author: map(.author) | unique | if length == 1 then .[0] else "" end;
+  def posts_summary: "\(length) new by \(map(.author | if . == "" then "ghost" else . end) | unique | join(", "))";
+  # The agent's fetch for a github-discussion observation: gh has no
+  # discussion command. Values inline rather than as -F variables keep the
+  # command short in the prompt; owner and name are [\w.-], number digits.
+  def discussion_fetch($sel): ["gh", "api", "graphql", "-f", "query={repository(owner:\"\(.owner)\",name:\"\(.name)\"){discussion(number:\(.number)){\($sel)}}}"];
+  def comments_fetch($n): discussion_fetch("comments(last:\([$n, 100] | min)){nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}");
+
   # Tags of the full releases of a github-release observation published after
   # $old.latest, newest first.
   def releases_new($old): [.releases[] | select(.published_at > ($old.latest // ""))] | sort_by(.published_at) | reverse | map(.tag);
@@ -417,6 +431,106 @@ sources:
         urgent: true
         terminal: true
         summary: '"closed\(if .reason != "" then " as \(.reason | ascii_downcase | gsub("_"; " "))" else "" end) by \(if .closer != "" then .closer else .state_actor end); kelpie stops watching"'
+
+  # One watched discussion: kelpie watch github <discussion-url>, until it is
+  # closed or the pane goes away. GraphQL is the only documented API for
+  # discussions, and the notifications API misses their comments. Comments
+  # and replies are high-water marks of createdAt rather than counts, so a
+  # deleted comment cannot cancel out a new one, and the new posts are known
+  # by author. The page holds the newest 100 comments and the newest 10
+  # replies of each; a reply to an older comment is missed. One poll costs 1
+  # point of the 5,000 an hour.
+  - name: github-discussion
+    adapter: cli
+    every: 60s
+    for_each: { subjects: "github-discussion:{owner}/{name}#{number}" }
+    run: [gh, api, graphql, -F, "owner={owner}", -F, "name={name}", -F, "number={number}", -F, "query=@-"]
+    stdin: |
+      fragment author on Actor { login __typename }
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          discussion(number: $number) {
+            number url closed stateReason isAnswered
+            answer { author { ...author } }
+            answerChosenBy { ...author }
+            comments(last: 100) { totalCount nodes {
+              id createdAt author { ...author }
+              replies(last: 10) { nodes { createdAt author { ...author } } }
+            } }
+          }
+        }
+      }
+    # Only logins and GitHub's state enter a prompt; title, description and
+    # comments stay behind the fetch.
+    map: |
+      .data.repository.discussion
+      | [.comments.nodes[] | {
+          id, at: .createdAt, author: (.author | login),
+          replies: [.replies.nodes[] | {at: .createdAt, author: (.author | login)}]
+        }] as $thread
+      | {
+        url: .url,
+        fields: {
+          number, owner: $parent.owner, name: $parent.name,
+          repo: "\($parent.owner)/\($parent.name)",
+          closed,
+          reason: (.stateReason // ""),
+          # null in a category without answers, such as Ideas.
+          answered: (.isAnswered == true),
+          answer_author: (.answer.author | login),
+          chooser: (.answerChosenBy | login),
+          comments: .comments.totalCount,
+          comment_at: ([$thread[].at] | max),
+          reply_at: ([$thread[].replies[].at] | max),
+          thread: $thread
+        }
+      }
+      | .fetch = (.fields | discussion_fetch("title body answer{url author{login}} comments(last:20){totalCount nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}"))
+    # discussion #31 answered, discussion #31 closed
+    badge: |
+      "discussion #\(.number)"
+      + (if .answered then " answered" else "" end)
+      + (if .closed then " closed" else "" end)
+    transitions:
+      - field: comment_at
+        increased: true
+        ignore: [null]    # every comment deleted: keep the newest seen
+        kind: comment.added
+        actor: 'comments_new($old) | sole_author'
+        summary: 'comments_new($old) | posts_summary'
+        fetch: 'comments_fetch(comments_new($old) | length)'
+      # Replies by thread: the comment's author tells the agent whether
+      # someone answered it.
+      - field: reply_at
+        increased: true
+        ignore: [null]
+        kind: reply.added
+        actor: 'replies_new($old) | sole_author'
+        summary: 'replies_new($old) | "\(posts_summary), to comments by \(map(.to | if . == "" then "ghost" else . end) | unique | join(", "))"'
+        fetch: '["gh", "api", "graphql", "-f", "query={nodes(ids:[\(replies_new($old) | map(.id) | unique | map(tojson) | join(","))]){...on DiscussionComment{url author{login} body replies(last:10){nodes{author{login} body}}}}}"]'
+      # Not terminal: the asker's follow-up to the answer is often the reply
+      # that matters, and an answer can be unmarked again.
+      - field: answered
+        to: true
+        kind: answer.marked
+        actor: .chooser
+        summary: '"the comment by \(.answer_author) marked as the answer by \(.chooser)"'
+        fetch: 'discussion_fetch("answer{url author{login} body}")'
+      - field: answered
+        to: false
+        kind: answer.unmarked
+        summary: '"answer unmarked"'
+      - field: closed
+        to: false
+        kind: state.reopened
+        summary: '"reopened"'
+      # No actor: closing ends the watch, even when you closed it yourself.
+      - field: closed
+        to: true
+        kind: state.closed
+        urgent: true
+        terminal: true
+        summary: '"closed\(if .reason != "" then " as \(.reason | ascii_downcase)" else "" end); kelpie stops watching"'
 
   # One watched workflow run: kelpie watch github <run-url>, until the run
   # completes. Polls the way gh run watch does: the run and its jobs on every

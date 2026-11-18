@@ -77,7 +77,7 @@ func TestResolve(t *testing.T) {
 		{args: []string{"github", "https://github.com/acme/api/issues/7", "acme/api"}, want: []core.Subject{"github-issue:acme/api#7", "github-inbox:acme/api"}},
 		{args: []string{"acme/api"}, want: []core.Subject{"github-inbox:acme/api"}},
 		{args: []string{"github-inbox:acme"}, want: []core.Subject{"github-inbox:acme"}},
-		{args: []string{"https://github.com/acme/api/discussions/3"}, err: "can't watch a single discussion"},
+		{args: []string{"https://github.com/acme/api/discussions/3"}, want: []core.Subject{"github-discussion:acme/api#3"}},
 		{args: []string{"acme"}, err: "no provider claims acme; name its provider, as in kelpie watch <provider> acme"},
 		{args: []string{"linear", "acme/api#7"}, err: "want a Linear issue ID"},
 		{args: []string{"jira", "ENG-1"}, err: `no provider "jira"; providers: github, linear`},

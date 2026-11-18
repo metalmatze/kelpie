@@ -372,6 +372,53 @@ func TestGitHubReleaseSourceFirstRelease(t *testing.T) {
 	}
 }
 
+// The fixtures are synthetic responses of the github-discussion query, shaped
+// like cli/cli#14934's: a baseline of two comments, one with a reply (1), a
+// new comment (2), replies to two comments by a person and a bot (3), carol's
+// comment marked as the answer (4), and the discussion closed (5).
+func TestGitHubDiscussionSource(t *testing.T) {
+	m, d := githubSource(t, "github-discussion")
+	parent := &core.Observation{
+		Subject: "github-discussion:acme/api#31",
+		Fields:  map[string]any{"owner": "acme", "name": "api", "number": "31"},
+	}
+	for _, step := range []struct {
+		file                        string
+		kind, summary, actor, fetch string // empty kind: no event
+		terminal                    bool
+	}{
+		{file: "1.json"},
+		{file: "2.json", kind: "comment.added", summary: "1 new by carol", actor: "carol",
+			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){comments(last:1){nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}}}}`},
+		// Two authors: no actor, so a reply of your own cannot hide the other.
+		{file: "3.json", kind: "reply.added", summary: "2 new by alice, copilot[bot], to comments by bob, carol",
+			fetch: `gh api graphql -f query={nodes(ids:["DC_bob","DC_carol"]){...on DiscussionComment{url author{login} body replies(last:10){nodes{author{login} body}}}}}`},
+		{file: "4.json", kind: "answer.marked", summary: "the comment by carol marked as the answer by alice", actor: "alice",
+			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){answer{url author{login} body}}}}`},
+		{file: "5.json", kind: "state.closed", summary: "closed as resolved; kelpie stops watching", terminal: true,
+			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){title body answer{url author{login}} comments(last:20){totalCount nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}}}}`},
+	} {
+		events := observeFixtureIn(t, "github-discussion", m, d, parent, step.file)
+		if step.kind == "" {
+			if len(events) > 0 {
+				t.Fatalf("%s: unexpected events %v", step.file, events)
+			}
+			continue
+		}
+		if len(events) != 1 {
+			t.Fatalf("%s: got %d events %v, want 1", step.file, len(events), events)
+		}
+		e := events[0]
+		if e.Kind != step.kind || e.Summary != step.summary || e.Actor != step.actor || e.Terminal != step.terminal || strings.Join(e.Fetch, " ") != step.fetch {
+			t.Errorf("%s: got %s %q actor %q terminal %v fetch %q,\nwant %s %q actor %q terminal %v fetch %q",
+				step.file, e.Kind, e.Summary, e.Actor, e.Terminal, strings.Join(e.Fetch, " "), step.kind, step.summary, step.actor, step.terminal, step.fetch)
+		}
+		if e.Subject != parent.Subject || e.URL != "https://github.com/acme/api/discussions/31" {
+			t.Errorf("%s: subject %s url %s", step.file, e.Subject, e.URL)
+		}
+	}
+}
+
 // The fixtures are pyrra#1987 as gh api graphql returned it (1.json), and the
 // same response after a review, a bot comment, a title edit and a label (2.json).
 func TestGitHubPRSource(t *testing.T) {

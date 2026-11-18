@@ -1,0 +1,85 @@
+{
+ "data": {
+  "repository": {
+   "discussion": {
+    "number": 31,
+    "url": "https://github.com/acme/api/discussions/31",
+    "closed": true,
+    "stateReason": "RESOLVED",
+    "isAnswered": true,
+    "answer": {
+     "author": {
+      "login": "carol",
+      "__typename": "User"
+     }
+    },
+    "answerChosenBy": {
+     "login": "alice",
+     "__typename": "User"
+    },
+    "comments": {
+     "totalCount": 3,
+     "nodes": [
+      {
+       "id": "DC_alice",
+       "createdAt": "2026-11-10T09:00:00Z",
+       "author": {
+        "login": "alice",
+        "__typename": "User"
+       },
+       "replies": {
+        "nodes": [
+         {
+          "createdAt": "2026-11-10T10:00:00Z",
+          "author": {
+           "login": "bob",
+           "__typename": "User"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "id": "DC_bob",
+       "createdAt": "2026-11-11T09:00:00Z",
+       "author": {
+        "login": "bob",
+        "__typename": "User"
+       },
+       "replies": {
+        "nodes": [
+         {
+          "createdAt": "2026-11-12T10:05:00Z",
+          "author": {
+           "login": "alice",
+           "__typename": "User"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "id": "DC_carol",
+       "createdAt": "2026-11-12T09:00:00Z",
+       "author": {
+        "login": "carol",
+        "__typename": "User"
+       },
+       "replies": {
+        "nodes": [
+         {
+          "createdAt": "2026-11-12T10:00:00Z",
+          "author": {
+           "login": "copilot",
+           "__typename": "Bot"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

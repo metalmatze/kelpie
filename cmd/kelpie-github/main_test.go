@@ -9,30 +9,32 @@ import (
 
 func TestParse(t *testing.T) {
 	for in, want := range map[string]string{
-		"https://github.com/acme/api/pull/421/files":             "github:acme/api#421",
-		"https://github.com/acme/api/pull/421":                   "github:acme/api#421",
-		"acme/api#421":                                           "github:acme/api#421",
-		"acme/api":                                               "github-inbox:acme/api",
-		"acme":                                                   "github-inbox:acme",
-		" acme/api.go ":                                          "github-inbox:acme/api.go",
-		"https://github.com/acme/api":                            "github-inbox:acme/api",
-		"https://github.com/acme/api/":                           "github-inbox:acme/api",
-		"https://github.com/acme/api/issues":                     "github-inbox:acme/api",
-		"https://github.com/acme/api/issues/7":                   "github-issue:acme/api#7",
-		"https://github.com/acme/api/issues/7#issuecomment-1":    "github-issue:acme/api#7",
-		"https://github.com/acme/api/discussions/7":              "",
-		"https://github.com/acme/api/actions/runs/42":            "github-run:acme/api/42",
-		"https://github.com/acme/api/actions/runs/42/job/7":      "github-run:acme/api/42",
-		"https://github.com/acme/api/actions/runs/42/attempts/2": "github-run:acme/api/42",
-		"https://github.com/acme/api/actions":                    "github-inbox:acme/api",
-		"https://github.com/acme/api/releases":                   "github-release:acme/api",
-		"https://github.com/acme/api/releases/":                  "github-release:acme/api",
-		"https://github.com/acme/api/releases/tag/v1.2.0":        "github-release:acme/api",
-		"https://github.com/acme/api/releases/latest":            "github-release:acme/api",
-		"https://github.com/acme/api/releases?page=2":            "github-release:acme/api",
-		"https://github.com/acme/api/releasesx":                  "github-inbox:acme/api",
-		"https://github.com/acme":                                "github-inbox:acme",
-		"https://github.com/acme?tab=repositories":               "github-inbox:acme",
+		"https://github.com/acme/api/pull/421/files":                    "github:acme/api#421",
+		"https://github.com/acme/api/pull/421":                          "github:acme/api#421",
+		"acme/api#421":                                                  "github:acme/api#421",
+		"acme/api":                                                      "github-inbox:acme/api",
+		"acme":                                                          "github-inbox:acme",
+		" acme/api.go ":                                                 "github-inbox:acme/api.go",
+		"https://github.com/acme/api":                                   "github-inbox:acme/api",
+		"https://github.com/acme/api/":                                  "github-inbox:acme/api",
+		"https://github.com/acme/api/issues":                            "github-inbox:acme/api",
+		"https://github.com/acme/api/issues/7":                          "github-issue:acme/api#7",
+		"https://github.com/acme/api/issues/7#issuecomment-1":           "github-issue:acme/api#7",
+		"https://github.com/acme/api/discussions/7":                     "github-discussion:acme/api#7",
+		"https://github.com/acme/api/discussions/7#discussioncomment-1": "github-discussion:acme/api#7",
+		"https://github.com/acme/api/discussions":                       "github-inbox:acme/api",
+		"https://github.com/acme/api/actions/runs/42":                   "github-run:acme/api/42",
+		"https://github.com/acme/api/actions/runs/42/job/7":             "github-run:acme/api/42",
+		"https://github.com/acme/api/actions/runs/42/attempts/2":        "github-run:acme/api/42",
+		"https://github.com/acme/api/actions":                           "github-inbox:acme/api",
+		"https://github.com/acme/api/releases":                          "github-release:acme/api",
+		"https://github.com/acme/api/releases/":                         "github-release:acme/api",
+		"https://github.com/acme/api/releases/tag/v1.2.0":               "github-release:acme/api",
+		"https://github.com/acme/api/releases/latest":                   "github-release:acme/api",
+		"https://github.com/acme/api/releases?page=2":                   "github-release:acme/api",
+		"https://github.com/acme/api/releasesx":                         "github-inbox:acme/api",
+		"https://github.com/acme":                                       "github-inbox:acme",
+		"https://github.com/acme?tab=repositories":                      "github-inbox:acme",
 		"acme/api/x":                  "",
 		"https://gitlab.com/acme/api": "",
 		"github:acme/api#1":           "",
@@ -47,14 +49,18 @@ func TestParse(t *testing.T) {
 
 // owner/repo#N is whatever GitHub says the number is; URLs say it themselves.
 func TestParseAsksGitHub(t *testing.T) {
-	issue7 := func(owner, name, number string) (bool, error) { return number != "7", nil }
+	kinds := func(owner, name, number string) (kind, error) {
+		return map[string]kind{"7": issue, "9": discussion}[number], nil
+	}
 	for in, want := range map[string]string{
-		"acme/api#7":                           "github-issue:acme/api#7",
-		"acme/api#421":                         "github:acme/api#421",
-		"https://github.com/acme/api/pull/7":   "github:acme/api#7",
-		"https://github.com/acme/api/issues/8": "github-issue:acme/api#8",
+		"acme/api#7":                                "github-issue:acme/api#7",
+		"acme/api#9":                                "github-discussion:acme/api#9",
+		"acme/api#421":                              "github:acme/api#421",
+		"https://github.com/acme/api/pull/7":        "github:acme/api#7",
+		"https://github.com/acme/api/issues/8":      "github-issue:acme/api#8",
+		"https://github.com/acme/api/discussions/7": "github-discussion:acme/api#7",
 	} {
-		if got, err := parse(in, issue7); got != want || err != nil {
+		if got, err := parse(in, kinds); got != want || err != nil {
 			t.Errorf("parse(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
@@ -83,6 +89,7 @@ func TestTargetsParse(t *testing.T) {
 	for in, claimed := range map[string]bool{
 		"https://github.com/acme/api/pull/421/files":  true,
 		"https://github.com/acme/api/issues/7":        true,
+		"https://github.com/acme/api/discussions/9":   true,
 		"https://github.com/acme/api/actions/runs/42": true,
 		"https://github.com/acme/api/releases":        true,
 		"https://github.com/acme":                     true,
