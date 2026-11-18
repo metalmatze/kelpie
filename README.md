@@ -252,7 +252,7 @@ herdr plugin link "$PWD/herdr-plugin"
 herdr runs the startup hook at the next herdr server start, not when you link the plugin. The plugin needs `kelpie`, `gh`, and `jq` on herdr's `PATH`. Set `KELPIE_BIN` to use a `kelpie` binary from somewhere else. The plugin adds:
 
 - A startup hook. If no daemon answers, it runs `kelpie daemon` in the tab "daemon" of the workspace "kelpie". It creates the workspace and the tab if they do not exist.
-- A link handler. Ctrl-click a pull request, issue, workflow run or Linear issue link in a pane to watch it for the pane's agent. A Linear link needs the `linear` provider registered. Ctrl is the modifier on macOS too. herdr handles the click only while `ui.mouse_capture` is on, which is the default.
+- A link handler. Ctrl-click a pull request, issue, discussion, workflow run or Linear issue link in a pane to watch it for the pane's agent. A Linear link needs the `linear` provider registered. Ctrl is the modifier on macOS too. herdr handles the click only while `ui.mouse_capture` is on, which is the default.
 - The action `kelpie.watch-pr`, which watches the PR of the focused pane's branch.
 - The action `kelpie.status`, which opens `kelpie status` in a popup.
 
