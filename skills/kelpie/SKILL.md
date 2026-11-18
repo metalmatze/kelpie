@@ -1,6 +1,6 @@
 ---
 name: kelpie
-description: Watch a GitHub PR, issue or Actions workflow run, a Linear issue, a repo's releases, or a repo's or org's GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie's updates. Use right after opening a PR (gh pr create), when the user links or names a PR, an issue or a Linear issue (ENG-123) to work on, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo's or org's GitHub notifications or to hear when a project ships a release, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie] or is headed From: KELPIE (kelpie).
+description: 'Watch a GitHub PR, issue or Actions workflow run, a Linear issue, a repo''s releases, or a repo''s or org''s GitHub notifications, with kelpie, set reminders with kelpie, and act on kelpie''s updates. Use right after opening a PR (gh pr create), when the user links or names a PR, an issue or a Linear issue (ENG-123) to work on, when you wait for a GitHub Actions run (a deploy after a merge, a release) instead of running gh run watch, when the user wants this session to follow a repo''s or org''s GitHub notifications or to hear when a project ships a release, when the user asks to follow up or check something again later ("tomorrow at 10", "in an hour", "every morning"), or when a message starts with [kelpie] or is headed From: KELPIE (kelpie).'
 ---
 
 # kelpie
