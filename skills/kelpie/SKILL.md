@@ -18,7 +18,7 @@ When a PR or an issue comes up (you opened the PR, or the user linked or named o
 
 When you open a PR for a watched issue, offer a watch for the PR too: the issue watch reports only that the PR was opened or merged, not its checks or reviews.
 
-If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. Report any other error as is.
+If either command says "kelpie daemon is not running", ask the user to start `kelpie daemon` in another pane and retry once they confirm it runs. If `kelpie watch github` says `no provider "github"`, GitHub is not set up: tell the user that kelpie needs `providers: {github: {command: [kelpie-github]}}` in its config, and do not edit the config yourself. Report any other error as is.
 
 The watch ends by itself when the PR is merged or closed or the issue is closed, or when this pane closes (in Orca: when the worktree is removed or archived). `kelpie unwatch github <url>` ends it early, for this pane only.
 

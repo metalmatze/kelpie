@@ -8,6 +8,13 @@ Run each command in the agent's terminal. The examples use the placeholder repos
 
 ### Watch GitHub for an agent
 
+GitHub support is the separate binary `kelpie-github`, a [provider](#providers). `kelpie init` registers it. If your [config file](#configuration) is older, register it yourself, or kelpie has no GitHub sources:
+
+```yaml
+providers:
+  github: {command: [kelpie-github]}
+```
+
 Follow a PR for the agent that owns it. A coding agent's turn ends after it pushes, so it misses what happens to the PR next. kelpie tells the agent about events such as CI failing or passing, someone else commenting, reviewing, or pushing, a conflict with the base branch, and the merge. It ignores your own activity and most bots. The watch ends when the PR merges or closes, or when the agent's pane closes.
 
 ```sh
@@ -116,11 +123,11 @@ kelpie needs:
 
 - Go 1.27 or later, to build it.
 - [herdr](https://herdr.dev) 0.9.5 or later, the Orca app, or both. kelpie reaches only agents that run in a herdr pane, an Orca terminal, or an Orca chat. kelpie uses herdr by default. To use Orca, see [Orca](#orca).
-- The GitHub CLI `gh`, logged in (`gh auth status`). kelpie uses the same GitHub access as your agent.
+- The GitHub CLI `gh`, logged in (`gh auth status`). kelpie uses the same GitHub access as your agent. For GitHub, `kelpie-github` registered under `providers:`, which `kelpie init` does (see [Providers](#providers)).
 - `jq` and `bash`, for the herdr plugin only.
 - For Linear only: `kelpie-linear` registered under `providers:` (see [Providers](#providers)), `curl`, and a Linear personal API key with Read permission, stored once with `kelpie auth login linear`. Without a key, the daemon logs one warning at start. Without the `providers:` entry, kelpie has no Linear sources at all.
 
-Clone the repository and install the binaries: `kelpie` and the providers, such as `kelpie-linear`. You need the checkout for the herdr plugin and the agent skill too.
+Clone the repository and install the binaries: `kelpie` and the providers `kelpie-github` and `kelpie-linear`. You need the checkout for the herdr plugin and the agent skill too.
 
 ```sh
 git clone https://github.com/metalmatze/kelpie
@@ -325,16 +332,18 @@ Other agents in a herdr pane or an Orca worktree get the same updates without th
 
 ## Configuration
 
-kelpie runs on the built-in default, [`internal/config/default.yaml`](internal/config/default.yaml). Your file, `~/.config/kelpie/config.yaml` (or under `$XDG_CONFIG_HOME`), layers over it. Put only what you change in your file. Everything else follows the default of the kelpie binary you run, so new sources and fixes reach you without copying. To write a commented starter file and print the config in effect:
+kelpie runs on the built-in default, [`internal/config/default.yaml`](internal/config/default.yaml), and the sources of the [providers](#providers) your file registers. Your file, `~/.config/kelpie/config.yaml` (or under `$XDG_CONFIG_HOME`), layers over both. Put only what you change in your file. Everything else follows the kelpie and provider binaries you run, so new sources and fixes reach you without copying. To write a commented starter file and print the config in effect:
 
 ```sh
 kelpie init
 kelpie config show
 ```
 
-For example, this file turns on Orca, keeps herdr and every default source, switches off the org notifications source, and adds a jq helper:
+For example, this file registers GitHub, turns on Orca, keeps herdr and every GitHub source but the org notifications source, and adds a jq helper:
 
 ```yaml
+providers:
+  github: {command: [kelpie-github]}
 hosts:
   orca:
     enabled: true
@@ -348,17 +357,17 @@ The merge rules are:
 
 - Settings merge key by key.
 - A list, such as `rules.ignore_actors` or `delivery.notify.kinds`, replaces the default's list.
-- A source with the name of a default source replaces that source completely, not field by field. A source with a new name is added.
-- An entry with only `name` and `enabled: false` switches off a default source.
-- `defs` are added after the default's jq definitions.
+- A source with the name of a provider's source replaces that source completely, not field by field. A source with a new name is added.
+- An entry with only `name` and `enabled: false` switches off a provider's source.
+- `defs` are added after the providers' jq definitions.
 
-When your file replaces a default source or redefines a default def, kelpie prints a warning at start and in `kelpie config show`. Delete those entries from your file unless you changed them on purpose. A file that `kelpie init` wrote before this change is a full copy of the default at that time. It gets these warnings for every source. Trim it to the settings you changed, or move it away and run `kelpie init` again.
+When your file replaces a provider's source or redefines a provider's def, kelpie prints a warning at start and in `kelpie config show`. Delete those entries from your file unless you changed them on purpose. A file that `kelpie init` wrote before this change is a full copy of the default at that time, GitHub's sources included. It gets these warnings for every source. Trim it to the settings you changed, or move it away and run `kelpie init` again.
 
 Unknown keys are errors. kelpie reads the file only at start, so restart the daemon after you edit it. Every command takes `--config <path>` to use another file.
 
 Settings you may want to change are `delivery.debounce`, `delivery.notify.stuck`, and `rules.allow_bots`. The comments in the default file describe the rest.
 
-The config also defines each source as a command (`gh` for GitHub, `curl` for Linear), a jq mapping, and the transitions that become events. A new source needs no Go code. The default sources are `github-pr`, `github-checks`, `github-issue`, `github-run`, `github-inbox`, `github-inbox-org`, and `github-release`; the `linear` provider adds `linear` and `linear-issue`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, `github-run`, `github-release`, `linear-issue`, and the inbox sources need `--subject`:
+The config also defines each source as a command (`gh` for GitHub, `curl` for Linear), a jq mapping, and the transitions that become events. A new source needs no Go code. The `github` provider has `github-pr`, `github-checks`, `github-issue`, `github-run`, `github-inbox`, `github-inbox-org`, and `github-release`; the `linear` provider has `linear` and `linear-issue`. To run one source once and print what it observes, use `kelpie source test`. `github-pr`, `github-issue`, `github-run`, `github-release`, `linear-issue`, and the inbox sources need `--subject`:
 
 ```sh
 kelpie source test github-pr --subject https://github.com/prometheus-community/pyrra/pull/2013
@@ -366,16 +375,17 @@ kelpie source test github-pr --subject https://github.com/prometheus-community/p
 
 ### Providers
 
-A provider is an integration in a binary of its own, such as `kelpie-linear`. kelpie runs only the providers your file lists, with the command you give. It never searches `PATH` for them:
+A provider is an integration in a binary of its own: `kelpie-github` and `kelpie-linear`. kelpie runs only the providers your file lists, with the command you give. It never searches `PATH` for other `kelpie-*` binaries:
 
 ```yaml
 providers:
+  github: {command: [kelpie-github]}
   linear: {command: [/Users/me/go/bin/kelpie-linear]}
 ```
 
-At start, kelpie runs `<command> describe`. The provider prints its sources, its credential, the branch names that bind its subjects, and the URLs and IDs it parses. Its sources layer between the default and your file, so a source of the same name in your file replaces the provider's. `kelpie config show` marks each source that came from a provider and lists what each provider contributed. A provider whose `describe` fails or takes longer than 10 seconds is skipped with a warning, and kelpie runs without it.
+At start, kelpie runs `<command> describe`. The provider prints its sources, its credential, the branch names that bind its subjects, and the URLs and IDs it parses. `kelpie-github` also names a `me` command, which prints the login `gh` acts as. The daemon runs it at start, so `@me` in `rules.ignore_actors` drops your own GitHub activity. Its sources layer between the default and your file, so a source of the same name in your file replaces the provider's. `kelpie config show` marks each source that came from a provider and lists what each provider contributed. A provider whose `describe` fails or takes longer than 10 seconds is skipped with a warning, and kelpie runs without it.
 
-`kelpie watch <provider> <target>` runs `<command> subject <target>` in your shell, in the current directory, and watches what it prints. `kelpie watch <target>` without a provider name works for a URL or ID that exactly one provider claims, such as a Linear issue URL. If two providers claim it, kelpie asks for the provider name. Anything else is read as GitHub input or a subject.
+`kelpie watch <provider> <target>` runs `<command> subject <target>` in your shell, in the current directory, and watches what it prints. `kelpie watch <target>` without a provider name works for a URL or ID that exactly one provider claims, such as a Linear issue URL. If two providers claim it, kelpie asks for the provider name. A subject, as `kelpie status` lists it, needs no provider. kelpie refuses anything else and lists the providers. An org name alone needs its provider, as in `kelpie watch github org`, because any provider's ID could be a bare word.
 
 To stop a provider from binding its issues to panes by branch, set `binders.<provider>: false`, such as `binders.linear: false`. To remove a provider, delete its entry under `providers:`.
 
