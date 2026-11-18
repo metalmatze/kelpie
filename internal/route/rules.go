@@ -12,16 +12,16 @@ type Rules struct {
 	ignore, allow, forward []string
 }
 
-// NewRules resolves "@me" to the user's own GitHub login. With me empty,
-// "@me" matches nobody rather than everybody. "@me" also stays as is: a
-// source that knows its viewer, like Linear with isMe, reports the person's
-// own changes with the actor "@me", since its user names are not GitHub
-// logins.
-func NewRules(c config.Rules, me string) Rules {
+// NewRules resolves "@me" to the person's own names, one per provider that
+// has a me, like their GitHub login. With none, "@me" matches nobody rather
+// than everybody. "@me" also stays as is: a source that knows its viewer,
+// like Linear with isMe, reports the person's own changes with the actor
+// "@me" itself.
+func NewRules(c config.Rules, me []string) Rules {
 	r := Rules{allow: c.AllowBots, forward: c.Forward}
 	for _, p := range c.IgnoreActors {
-		if p == "@me" && me != "" {
-			r.ignore = append(r.ignore, me)
+		if p == "@me" {
+			r.ignore = append(r.ignore, me...)
 		}
 		r.ignore = append(r.ignore, p)
 	}

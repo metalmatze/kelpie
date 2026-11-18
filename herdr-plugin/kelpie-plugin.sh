@@ -20,7 +20,7 @@ watch() {
 		return
 	fi
 	# No provider name: kelpie gives the link to the provider whose target
-	# patterns claim it, a GitHub link to the built-in GitHub.
+	# patterns claim it, kelpie-github for a GitHub link.
 	local out
 	if out=$("$kelpie" watch "$1" --workspace "$pane" 2>&1); then
 		notify "$(head -n1 <<<"$out")"

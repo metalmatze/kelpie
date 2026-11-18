@@ -3,6 +3,7 @@ package diff
 import (
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -181,13 +182,28 @@ func TestIncreased(t *testing.T) {
 	}
 }
 
-// defaultSource builds the mapper and differ of a source from the default config.
-func defaultSource(t *testing.T, name string) (*Mapper, *Differ) {
+// githubConfig registers the describe output kelpie-github embeds, without
+// building the binary.
+func githubConfig(t *testing.T) *config.Config {
 	t.Helper()
-	cfg, err := config.Parse(t.Context(), nil)
+	path, err := filepath.Abs("../../cmd/kelpie-github/describe.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := config.Parse(t.Context(), []byte("providers:\n  github: {command: [sh, -c, \"cat '"+path+"'\"]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skipped) > 0 {
+		t.Fatal(cfg.Skipped)
+	}
+	return cfg
+}
+
+// githubSource builds the mapper and differ of a kelpie-github source.
+func githubSource(t *testing.T, name string) (*Mapper, *Differ) {
+	t.Helper()
+	cfg := githubConfig(t)
 	src, ok := cfg.Source(name)
 	if !ok {
 		t.Fatalf("no %s source", name)
@@ -206,8 +222,8 @@ func defaultSource(t *testing.T, name string) (*Mapper, *Differ) {
 // The fixtures are synthetic pages of GET /repos/acme/api/notifications:
 // a baseline (1), one thread read, two new and one updated (2), all but the
 // oldest read (3), all read (4), and one new thread after that (5).
-func TestDefaultGitHubInboxSource(t *testing.T) {
-	m, d := defaultSource(t, "github-inbox")
+func TestGitHubInboxSource(t *testing.T) {
+	m, d := githubSource(t, "github-inbox")
 	parent := &core.Observation{Subject: "github-inbox:acme/api", Fields: map[string]any{"owner": "acme", "name": "api"}}
 	for _, step := range []struct {
 		file           string
@@ -238,8 +254,8 @@ func TestDefaultGitHubInboxSource(t *testing.T) {
 
 // Page 1 of GET /notifications mixes orgs; only acme's threads count, in any
 // letter case, and other orgs' activity is not news.
-func TestDefaultGitHubInboxOrgSource(t *testing.T) {
-	m, d := defaultSource(t, "github-inbox-org")
+func TestGitHubInboxOrgSource(t *testing.T) {
+	m, d := githubSource(t, "github-inbox-org")
 	parent := &core.Observation{Subject: "github-inbox:acme", Fields: map[string]any{"owner": "acme"}}
 	observeFixture(t, m, d, parent, "org-1.json")
 	events := observeFixture(t, m, d, parent, "org-2.json")
@@ -278,15 +294,12 @@ func observeFixtureIn(t *testing.T, dir string, m *Mapper, d *Differ, parent *co
 // draft (2), two new full releases listed out of publish order (3), and the
 // same page again (4). Only full releases published since the last poll are
 // news, all in one update, and nothing of their names or notes is in it.
-func TestDefaultGitHubReleaseSource(t *testing.T) {
-	cfg, err := config.Parse(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestGitHubReleaseSource(t *testing.T) {
+	cfg := githubConfig(t)
 	if src, _ := cfg.Source("github-release"); src.Every.Duration != time.Hour {
 		t.Errorf("every %v, want 1h", src.Every.Duration)
 	}
-	m, d := defaultSource(t, "github-release")
+	m, d := githubSource(t, "github-release")
 	parent := &core.Observation{Subject: "github-release:acme/api", Fields: map[string]any{"owner": "acme", "name": "api"}}
 	for _, step := range []struct {
 		file           string
@@ -322,11 +335,8 @@ func TestDefaultGitHubReleaseSource(t *testing.T) {
 
 // Watching a repo's releases again after the last watch ended reports only
 // what is published from then on, not what came out in between.
-func TestDefaultGitHubReleaseSourceRewatch(t *testing.T) {
-	cfg, err := config.Parse(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestGitHubReleaseSourceRewatch(t *testing.T) {
+	cfg := githubConfig(t)
 	src, _ := cfg.Source("github-release")
 	m, err := NewMapper(src.Map, src.Slurp)
 	if err != nil {
@@ -350,8 +360,8 @@ func TestDefaultGitHubReleaseSourceRewatch(t *testing.T) {
 
 // A repo without releases is a baseline too, and its first release is news,
 // fetched with gh release view.
-func TestDefaultGitHubReleaseSourceFirstRelease(t *testing.T) {
-	m, d := defaultSource(t, "github-release")
+func TestGitHubReleaseSourceFirstRelease(t *testing.T) {
+	m, d := githubSource(t, "github-release")
 	parent := &core.Observation{Subject: "github-release:acme/api", Fields: map[string]any{"owner": "acme", "name": "api"}}
 	if events := observeFixtureIn(t, "github-release", m, d, parent, "empty.json"); len(events) > 0 {
 		t.Fatalf("empty: unexpected events %v", events)
@@ -364,8 +374,8 @@ func TestDefaultGitHubReleaseSourceFirstRelease(t *testing.T) {
 
 // The fixtures are pyrra#1987 as gh api graphql returned it (1.json), and the
 // same response after a review, a bot comment, a title edit and a label (2.json).
-func TestDefaultGitHubPRSource(t *testing.T) {
-	m, d := defaultSource(t, "github-pr")
+func TestGitHubPRSource(t *testing.T) {
+	m, d := githubSource(t, "github-pr")
 	parent := &core.Observation{
 		Subject: "github:prometheus-community/pyrra#1987",
 		Fields:  map[string]any{"owner": "prometheus-community", "name": "pyrra", "number": "1987"},

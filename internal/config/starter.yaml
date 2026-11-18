@@ -4,18 +4,19 @@
 #
 # - Settings merge key by key; a list (rules.ignore_actors,
 #   delivery.notify.kinds) replaces the default's list.
-# - A source with a built-in source's name replaces that source whole; a new
+# - A source with a provider source's name replaces that source whole; a new
 #   name adds one. `- {name: github-inbox-org, enabled: false}` switches a
-#   built-in source off.
-# - defs are added after the built-in jq definitions.
+#   provider's source off.
+# - defs are added after the providers' jq definitions.
 #
 # Restart the daemon after editing; kelpie reads this file only at start.
 
-# Integrations in their own binaries, by the command to run; kelpie never
-# looks for them on PATH. Linear needs kelpie-linear, then
-# `kelpie auth login linear`.
-# providers:
-#   linear: {command: [kelpie-linear]}
+# Integrations in their own binaries, by the command to run: kelpie runs
+# only the ones listed here, never other kelpie-* it finds. GitHub uses gh's
+# own login; Linear needs `kelpie auth login linear`.
+providers:
+  github: {command: [kelpie-github]}
+  # linear: {command: [kelpie-linear]}
 
 # hosts:
 #   herdr:

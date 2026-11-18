@@ -15,36 +15,36 @@ import (
 	"github.com/metalmatze/kelpie/internal/provider"
 )
 
-// linearProvider is a config registering the real kelpie-linear, built once
-// per test binary run.
-func linearProvider(t *testing.T) string {
+// providers is a config registering the real kelpie-github and
+// kelpie-linear, built once per test binary run.
+func providers(t *testing.T) string {
 	t.Helper()
-	return "providers:\n  linear: {command: ['" + buildLinear(t) + "']}\n"
+	return "providers:\n  github: {command: ['" + build(t, "kelpie-github") + "']}\n  linear: {command: ['" + build(t, "kelpie-linear") + "']}\n"
 }
 
-var linearBin string
+var built = map[string]string{}
 
-func buildLinear(t *testing.T) string {
+func build(t *testing.T, name string) string {
 	t.Helper()
-	if linearBin != "" {
-		return linearBin
+	if bin, ok := built[name]; ok {
+		return bin
 	}
-	dir, err := os.MkdirTemp("", "kelpie-linear-test")
+	dir, err := os.MkdirTemp("", name+"-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, "kelpie-linear")
-	if out, err := exec.Command("go", "build", "-o", bin, "../kelpie-linear").CombinedOutput(); err != nil {
-		t.Fatalf("go build kelpie-linear: %v\n%s", err, out)
+	bin := filepath.Join(dir, name)
+	if out, err := exec.Command("go", "build", "-o", bin, "../"+name).CombinedOutput(); err != nil {
+		t.Fatalf("go build %s: %v\n%s", name, err, out)
 	}
-	linearBin = bin
+	built[name] = bin
 	return bin
 }
 
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if linearBin != "" {
-		os.RemoveAll(filepath.Dir(linearBin))
+	for _, bin := range built {
+		os.RemoveAll(filepath.Dir(bin))
 	}
 	os.Exit(code)
 }
@@ -59,11 +59,10 @@ func acmeProvider(t *testing.T) string {
 }
 
 func TestResolve(t *testing.T) {
-	cfg, err := config.Parse(t.Context(), []byte(linearProvider(t)))
+	cfg, err := config.Parse(t.Context(), []byte(providers(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	github := func(s string) (core.Subject, error) { return core.GitHubSubject(s, nil) }
 	for _, tc := range []struct {
 		args []string
 		want []core.Subject
@@ -75,11 +74,15 @@ func TestResolve(t *testing.T) {
 		{args: []string{"ENG-123"}, want: []core.Subject{"linear:ENG-123"}},
 		{args: []string{"linear:eng-123"}, want: []core.Subject{"linear:ENG-123"}},
 		{args: []string{"https://github.com/acme/api/pull/7"}, want: []core.Subject{"github:acme/api#7"}},
+		{args: []string{"github", "https://github.com/acme/api/issues/7", "acme/api"}, want: []core.Subject{"github-issue:acme/api#7", "github-inbox:acme/api"}},
+		{args: []string{"acme/api"}, want: []core.Subject{"github-inbox:acme/api"}},
 		{args: []string{"github-inbox:acme"}, want: []core.Subject{"github-inbox:acme"}},
+		{args: []string{"https://github.com/acme/api/discussions/3"}, err: "can't watch a single discussion"},
+		{args: []string{"acme"}, err: "no provider claims acme; name its provider, as in kelpie watch <provider> acme"},
 		{args: []string{"linear", "acme/api#7"}, err: "want a Linear issue ID"},
-		{args: []string{"jira", "ENG-1"}, err: `no provider "jira"; providers: github (built in), linear`},
+		{args: []string{"jira", "ENG-1"}, err: `no provider "jira"; providers: github, linear`},
 	} {
-		got, err := resolve(t.Context(), cfg, tc.args, github)
+		got, err := resolve(t.Context(), cfg, tc.args)
 		if tc.err != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("%v: got %v, %v; want error %q", tc.args, got, err, tc.err)
@@ -93,46 +96,48 @@ func TestResolve(t *testing.T) {
 
 	// Two providers claiming a bare ID: refused, with the way out. A URL
 	// carries its host and still goes through.
-	cfg, err = config.Parse(t.Context(), []byte(linearProvider(t)+acmeProvider(t)))
+	cfg, err = config.Parse(t.Context(), []byte(providers(t)+acmeProvider(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolve(t.Context(), cfg, []string{"ENG-123"}, github); err == nil || !strings.Contains(err.Error(), "ENG-123 could be acme or linear; name the provider") {
+	if _, err := resolve(t.Context(), cfg, []string{"ENG-123"}); err == nil || !strings.Contains(err.Error(), "ENG-123 could be acme or linear; name the provider") {
 		t.Errorf("ambiguous: %v", err)
 	}
-	if got, err := resolve(t.Context(), cfg, []string{"https://linear.app/acme/issue/ENG-1"}, github); err != nil || !slices.Equal(got, []core.Subject{"linear:ENG-1"}) {
+	if got, err := resolve(t.Context(), cfg, []string{"https://linear.app/acme/issue/ENG-1"}); err != nil || !slices.Equal(got, []core.Subject{"linear:ENG-1"}) {
 		t.Errorf("URL: %v %v", got, err)
 	}
 	if got, err := subjectOf(t.Context(), cfg, "https://linear.app/acme/issue/ENG-1"); err != nil || got != "linear:ENG-1" {
 		t.Errorf("--subject: %v %v", got, err)
 	}
-	if got, err := subjectOf(t.Context(), cfg, "acme/api#7"); err != nil || got != "github:acme/api#7" {
+	if got, err := subjectOf(t.Context(), cfg, "https://github.com/acme/api/pull/7"); err != nil || got != "github:acme/api#7" {
 		t.Errorf("--subject of GitHub: %v %v", got, err)
 	}
 
-	// Without the provider, its link says so instead of failing as GitHub input.
+	// Without the provider, its link says so.
 	plain, err := config.Parse(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolve(t.Context(), plain, []string{"https://linear.app/acme/issue/ENG-1"}, github); err == nil || !strings.Contains(err.Error(), "no provider claims https://linear.app/acme/issue/ENG-1; no provider is registered") {
+	if _, err := resolve(t.Context(), plain, []string{"https://linear.app/acme/issue/ENG-1"}); err == nil || !strings.Contains(err.Error(), "no provider claims https://linear.app/acme/issue/ENG-1;") || !strings.Contains(err.Error(), "no provider loaded") {
 		t.Errorf("unclaimed link: %v", err)
 	}
-	if _, err := resolve(t.Context(), plain, []string{"linear", "ENG-1"}, github); err == nil || !strings.Contains(err.Error(), `no provider "linear"`) {
+	if _, err := resolve(t.Context(), plain, []string{"linear", "ENG-1"}); err == nil || !strings.Contains(err.Error(), `no provider "linear"`) {
 		t.Errorf("unregistered provider: %v", err)
 	}
 }
 
-// The generic watch and unwatch sit beside the built-in github ones.
+// github is a provider like any other: kelpie watch github <target>, as the
+// skill has always written it, now reaches it through the generic watch.
 func TestWatchCommands(t *testing.T) {
 	for args, want := range map[string]string{
-		"watch github acme/api#1":                "watch github",
-		"watch github":                           "watch github",
-		"watch linear ENG-1 --workspace w1":      "watch target <provider target>",
-		"watch https://linear.app/a/issue/ENG-1": "watch target <provider target>",
+		"watch github acme/api#1":                "watch <provider target>",
+		"watch github":                           "watch <provider target>",
+		"watch linear ENG-1 --workspace w1":      "watch <provider target>",
+		"watch https://linear.app/a/issue/ENG-1": "watch <provider target>",
 		"unwatch linear:ENG-1":                   "unwatch subject <subject or provider target>",
 		"unwatch linear ENG-1":                   "unwatch subject <subject or provider target>",
-		"unwatch github acme/api#1":              "unwatch github",
+		"unwatch github acme/api#1":              "unwatch subject <subject or provider target>",
+		"unwatch subject github:acme/api#1":      "unwatch subject <subject or provider target>",
 	} {
 		var cli CLI
 		p, err := kong.New(&cli, kong.Vars{"config": "x"})
@@ -144,11 +149,11 @@ func TestWatchCommands(t *testing.T) {
 			t.Errorf("%s: %v", args, err)
 			continue
 		}
-		if got := strings.TrimSuffix(kctx.Command(), " <target>"); got != want {
+		if got := kctx.Command(); got != want {
 			t.Errorf("%s: command %q, want %q", args, got, want)
 		}
-		if args == "watch linear ENG-1 --workspace w1" && (!slices.Equal(cli.Watch.Target.Target, []string{"linear", "ENG-1"}) || cli.Watch.Target.Workspace != "w1") {
-			t.Errorf("%s: parsed %+v", args, cli.Watch.Target)
+		if args == "watch linear ENG-1 --workspace w1" && (!slices.Equal(cli.Watch.Target, []string{"linear", "ENG-1"}) || cli.Watch.Workspace != "w1") {
+			t.Errorf("%s: parsed %+v", args, cli.Watch)
 		}
 	}
 }
@@ -156,7 +161,7 @@ func TestWatchCommands(t *testing.T) {
 // verify runs through kong with a context; an empty stdin fails before any
 // network call.
 func TestLinearVerifyWithoutKey(t *testing.T) {
-	_, err := provider.Verify(t.Context(), []string{buildLinear(t)}, []string{"verify"}, "")
+	_, err := provider.Who(t.Context(), []string{build(t, "kelpie-linear")}, []string{"verify"}, "")
 	if err == nil || !strings.Contains(err.Error(), "kelpie-linear verify: no API key on stdin") {
 		t.Fatalf("got %v", err)
 	}

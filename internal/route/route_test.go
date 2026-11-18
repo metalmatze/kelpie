@@ -58,7 +58,7 @@ func setup(t *testing.T) (*Router, *fakeHost, state.State) {
 		Retry:          config.Duration{Duration: 50 * time.Millisecond},
 		Prefix:         "[kelpie]",
 	}
-	rules := NewRules(config.Rules{IgnoreActors: []string{"@me", "*[bot]"}, AllowBots: []string{"cursor[bot]"}}, "metalmatze")
+	rules := NewRules(config.Rules{IgnoreActors: []string{"@me", "*[bot]"}, AllowBots: []string{"cursor[bot]"}}, []string{"metalmatze"})
 	return New(t.Context(), d, rules, b, []host.Host{h}), h, st
 }
 
@@ -160,12 +160,12 @@ func TestGlob(t *testing.T) {
 	}
 }
 
-// Sources without GitHub logins, like Linear, report your own changes as
-// "@me"; gh failing to resolve your login must not stop that.
+// Sources that know their viewer, like Linear, report your own changes as
+// "@me"; a provider failing to resolve its me must not stop that.
 func TestDropMe(t *testing.T) {
-	for _, me := range []string{"metalmatze", ""} {
+	for _, me := range [][]string{{"metalmatze", "matze"}, nil} {
 		r := NewRules(config.Rules{IgnoreActors: []string{"@me"}}, me)
-		for actor, want := range map[string]bool{"@me": true, "metalmatze": me != "", "alice": false, "": false} {
+		for actor, want := range map[string]bool{"@me": true, "metalmatze": me != nil, "matze": me != nil, "alice": false, "": false} {
 			if _, drop := r.Drop(core.Event{Kind: "comment.added", Actor: actor}); drop != want {
 				t.Errorf("me %q: Drop(actor %q) = %v, want %v", me, actor, drop, want)
 			}

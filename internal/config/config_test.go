@@ -1,10 +1,39 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// githubProvider registers the describe output kelpie-github embeds, without
+// building the binary.
+func githubProvider(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.Abs("../../cmd/kelpie-github/describe.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "providers:\n  github: {command: [sh, -c, \"cat '" + path + "'\"]}\n"
+}
+
+// githubCopy is a file holding a full copy of kelpie-github's defs and
+// sources, as an old kelpie's default had them.
+func githubCopy(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("../../cmd/kelpie-github/describe.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, ok := strings.Cut(string(b), "\ndefs: |")
+	if !ok {
+		t.Fatal("describe.yaml has no defs")
+	}
+	return "defs: |" + after
+}
 
 func names(c *Config) []string {
 	var n []string
@@ -14,14 +43,24 @@ func names(c *Config) []string {
 	return n
 }
 
+// The layering rules, over kelpie-github's sources and defs as most files
+// see them.
 func TestLayer(t *testing.T) {
-	base, err := layer(t.Context(), nil)
+	github := githubProvider(t)
+	base, err := layer(t.Context(), []byte(github))
 	if err != nil {
 		t.Fatal(err)
 	}
 	builtin := names(base)
 	if !slices.Contains(builtin, "github-issue") {
-		t.Fatalf("default sources %v lack github-issue", builtin)
+		t.Fatalf("provider sources %v lack github-issue", builtin)
+	}
+	plain, err := layer(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain.Sources) > 0 || plain.Defs != "" {
+		t.Fatalf("the default has sources %v or defs", names(plain))
 	}
 
 	for _, tc := range []struct {
@@ -30,15 +69,6 @@ func TestLayer(t *testing.T) {
 		err   string // substring; empty: no error
 		check func(t *testing.T, c *Config)
 	}{
-		{
-			name: "starter is the default",
-			file: string(Starter),
-			check: func(t *testing.T, c *Config) {
-				if !slices.Equal(names(c), builtin) || c.Defs != base.Defs || c.Hosts != base.Hosts || len(c.Warnings) > 0 {
-					t.Errorf("starter changes the default: sources %v, warnings %v", names(c), c.Warnings)
-				}
-			},
-		},
 		{
 			name: "one host key keeps the other hosts and every source",
 			file: "hosts: {orca: {enabled: true}}",
@@ -81,7 +111,7 @@ func TestLayer(t *testing.T) {
 			},
 		},
 		{
-			name: "a source of a default's name replaces it whole, in place",
+			name: "a source of a provider's name replaces it whole, in place",
 			file: "sources: [{name: github-pr, adapter: cli, run: [echo, '{}'], map: '{fields: {}}'}]",
 			check: func(t *testing.T, c *Config) {
 				if !slices.Equal(names(c), builtin) {
@@ -91,13 +121,13 @@ func TestLayer(t *testing.T) {
 				if s.Stdin != "" || s.ForEach != nil || len(s.Transitions) != 0 || s.Badge != "" || s.Every.Seconds() != 60 {
 					t.Errorf("github-pr kept default fields: %+v", s)
 				}
-				if len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "github-pr") {
+				if len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "github-pr (provider github)") {
 					t.Errorf("warnings = %v", c.Warnings)
 				}
 			},
 		},
 		{
-			name: "enabled false switches a default source off",
+			name: "enabled false switches a provider source off",
 			file: "sources: [{name: github-inbox-org, enabled: false}]",
 			check: func(t *testing.T, c *Config) {
 				want := slices.DeleteFunc(slices.Clone(builtin), func(n string) bool { return n == "github-inbox-org" })
@@ -107,7 +137,7 @@ func TestLayer(t *testing.T) {
 			},
 		},
 		{
-			name: "enabled true alone keeps the default source",
+			name: "enabled true alone keeps the provider source",
 			file: "sources: [{name: github-pr, enabled: true}]",
 			check: func(t *testing.T, c *Config) {
 				s, _ := c.Source("github-pr")
@@ -126,7 +156,7 @@ func TestLayer(t *testing.T) {
 			},
 		},
 		{
-			name: "a new name is added after the defaults",
+			name: "a new name is added after the providers'",
 			file: "sources: [{name: mine, adapter: cli, run: [true]}]",
 			check: func(t *testing.T, c *Config) {
 				if !slices.Equal(names(c), append(slices.Clone(builtin), "mine")) || len(c.Warnings) > 0 {
@@ -135,7 +165,7 @@ func TestLayer(t *testing.T) {
 			},
 		},
 		{
-			name: "defs add to the default's",
+			name: "defs add to the providers'",
 			file: "defs: 'def mine: 1;'",
 			check: func(t *testing.T, c *Config) {
 				if !strings.HasPrefix(c.Defs, base.Defs) || !strings.HasSuffix(c.Defs, "def mine: 1;") || len(c.Warnings) > 0 {
@@ -144,7 +174,7 @@ func TestLayer(t *testing.T) {
 			},
 		},
 		{
-			name: "redefining a default def warns",
+			name: "redefining a provider def warns",
 			file: "defs: 'def login: .name;'",
 			check: func(t *testing.T, c *Config) {
 				if len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "login") {
@@ -153,20 +183,20 @@ func TestLayer(t *testing.T) {
 			},
 		},
 		{
-			name: "a full copy of the default warns about every source and def",
-			file: string(Default),
+			name: "a full copy of a provider's sources and defs warns about them",
+			file: githubCopy(t),
 			check: func(t *testing.T, c *Config) {
 				if !slices.Equal(names(c), builtin) || len(c.Warnings) != 2 {
 					t.Errorf("sources %v, warnings %v", names(c), c.Warnings)
 				}
 			},
 		},
-		{name: "unknown key", file: "hosts: {orca: {enabeld: true}}", err: "line 1: field enabeld not found"},
+		{name: "unknown key", file: "hosts: {orca: {enabeld: true}}", err: "field enabeld not found in type config.Orca"},
 		{name: "source without name", file: "sources: [{adapter: cli}]", err: "sources[0]: name is required"},
 		{name: "source twice", file: "sources: [{name: a}, {name: a}]", err: "a is listed twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := layer(t.Context(), []byte(tc.file))
+			c, err := layer(t.Context(), []byte(github+tc.file))
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
 					t.Fatalf("err = %v, want %q", err, tc.err)
@@ -181,10 +211,27 @@ func TestLayer(t *testing.T) {
 	}
 }
 
+// The starter registers kelpie-github and changes nothing else, so a new
+// install watches GitHub as before GitHub became a provider.
+func TestStarter(t *testing.T) {
+	var file Config
+	if err := decode(Starter, &file); err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Providers) != 1 || !slices.Equal(file.Providers["github"].Command, []string{"kelpie-github"}) {
+		t.Errorf("starter providers %+v", file.Providers)
+	}
+	file.Providers = nil
+	var empty Config
+	if !reflect.DeepEqual(file, empty) {
+		t.Errorf("starter sets more than providers: %+v", file)
+	}
+}
+
 // Parse compiles the layered defs into every expression, so a file def is
 // usable by its own sources.
 func TestParseDefs(t *testing.T) {
-	c, err := Parse(t.Context(), []byte("defs: 'def mine: 1;'\nsources: [{name: x, adapter: cli, run: [true], map: mine}]"))
+	c, err := Parse(t.Context(), []byte(githubProvider(t)+"defs: 'def mine: 1;'\nsources: [{name: x, adapter: cli, run: [true], map: mine}]"))
 	if err != nil {
 		t.Fatal(err)
 	}

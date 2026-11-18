@@ -46,7 +46,7 @@ func (c *AuthLoginCmd) Run(ctx context.Context, g *Globals) error {
 	fmt.Printf("stored the %s credential\n", in.Name)
 	// Stored first: a network hiccup should not lose the paste. Failing still
 	// keeps login && something from going on with a key that does not work.
-	who, err := provider.Verify(ctx, p.Command, in.Verify, token)
+	who, err := provider.Who(ctx, p.Command, in.Verify, token)
 	if err != nil {
 		return fmt.Errorf("stored, but checking it with %s failed: %v; check again with kelpie auth status %s", in.Name, err, in.Name)
 	}
@@ -146,7 +146,7 @@ func (c *AuthStatusCmd) Run(ctx context.Context, g *Globals) error {
 			continue
 		}
 		_, p, _ := cfg.Credential(in.Name)
-		who, err := provider.Verify(ctx, p.Command, in.Verify, token)
+		who, err := provider.Who(ctx, p.Command, in.Verify, token)
 		if err != nil {
 			fmt.Printf("%s: stored, but rejected: %v\n", in.Name, err)
 			failed++

@@ -41,6 +41,12 @@ type Described struct {
 	// Targets are regexes for the URLs and IDs it parses, so a target given
 	// without a provider name goes to the one provider that claims it.
 	Targets []string `yaml:"targets,omitempty"`
+	// Me are the arguments appended to its command for a check that prints
+	// whom its sources act as, which "@me" in rules.ignore_actors stands for.
+	// The daemon runs it once at start. A provider whose sources mark the
+	// person's own changes "@me" themselves, as Linear's isMe allows, needs
+	// none.
+	Me []string `yaml:"me,flow,omitempty"`
 
 	// Command is the registered command, not part of describe.
 	Command []string `yaml:"-"`
@@ -180,6 +186,9 @@ func (d Described) summary(from map[string]string) string {
 	}
 	if n := len(d.Targets); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d target patterns", n))
+	}
+	if len(d.Me) > 0 {
+		parts = append(parts, "@me")
 	}
 	if len(parts) == 0 {
 		return "describe contributed nothing"

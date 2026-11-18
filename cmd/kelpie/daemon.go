@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/host/hc"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/host/orca"
+	"github.com/metalmatze/kelpie/internal/provider"
 	"github.com/metalmatze/kelpie/internal/route"
 	"github.com/metalmatze/kelpie/internal/schedule"
 	"github.com/metalmatze/kelpie/internal/state"
@@ -156,7 +156,7 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	for _, h := range d.hosts {
 		d.binder.Await(h.Name())
 	}
-	d.router = route.New(ctx, cfg.Delivery, route.NewRules(cfg.Rules, ghLogin(ctx)), d.binder, d.hosts)
+	d.router = route.New(ctx, cfg.Delivery, route.NewRules(cfg.Rules, me(ctx, cfg.Provided)), d.binder, d.hosts)
 
 	if err := d.buildRunners(cfg.Sources, st); err != nil {
 		return err
@@ -173,7 +173,10 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	// here instead of polling for nobody.
 	d.refreshWorkspaces()
 	for _, bd := range d.binder.AllBindings() {
-		d.startWatches(bd.Subject) // once per subject: the adapter skips running loops
+		// Once per subject: the adapter skips running loops.
+		if !d.startWatches(bd.Subject) {
+			slog.Warn("no source polls this watch; is its provider registered under providers:?", "subject", bd.Subject, "workspace", bd.Workspace)
+		}
 	}
 
 	starting.set(d)
@@ -343,7 +346,10 @@ func (d *daemon) polledOnItsOwn(subject core.Subject) bool {
 // startWatches starts every for_each.subjects source that handles subject,
 // each running for as long as some workspace watches it. A subject has one
 // loop no matter how many workspaces watch it.
-func (d *daemon) startWatches(subject core.Subject) {
+// startWatches reports whether a source polls subject. A saved watch whose
+// provider is gone stays saved, so it resumes once the provider is back.
+func (d *daemon) startWatches(subject core.Subject) bool {
+	matched := false
 	for _, r := range d.runners {
 		if r.pattern == nil {
 			continue
@@ -352,10 +358,12 @@ func (d *daemon) startWatches(subject core.Subject) {
 		if !ok {
 			continue
 		}
+		matched = true
 		r.a.Watch(d.ctx, core.Observation{Subject: subject, Fields: fields}, d.watchObserver(r, subject), func([]core.Observation, error) bool {
 			return len(d.binder.Bindings(subject)) > 0
 		})
 	}
+	return matched
 }
 
 // watchObserver drops what a loop observes once nobody watches its subject.
@@ -758,15 +766,23 @@ func (d *daemon) host(name string) host.Host {
 
 func (d *daemon) AgentReady(_, id string) { d.router.Kick(id) }
 
-// ghLogin resolves "@me" in ignore_actors. On failure kelpie still runs; it
-// just forwards your own comments too.
-func ghLogin(ctx context.Context) string {
-	out, err := exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login").Output()
-	if err != nil {
-		slog.Warn("could not resolve @me with gh api user; your own activity is not ignored", "err", err)
-		return ""
+// me resolves "@me" in ignore_actors with each provider's me. On failure
+// kelpie still runs; it just forwards that provider's own changes too.
+func me(ctx context.Context, provided []config.Described) []string {
+	var names []string
+	for _, p := range provided {
+		if len(p.Me) == 0 {
+			continue
+		}
+		who, err := provider.Who(ctx, p.Command, p.Me, "")
+		if err != nil {
+			slog.Warn("could not resolve @me; your own activity is not ignored", "provider", p.Name, "err", err)
+			continue
+		}
+		slog.Info("@me resolved", "provider", p.Name, "me", who)
+		names = append(names, who)
 	}
-	return strings.TrimSpace(string(out))
+	return names
 }
 
 // printHost delivers to stdout, for --dry-run against real workspaces.

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -256,16 +255,11 @@ func (c *SourceTestCmd) parent(ctx context.Context, cfg *config.Config, s config
 }
 
 type WatchCmd struct {
-	GitHub WatchGitHubCmd `cmd:"" name:"github" help:"Watch a pull request, an issue, a workflow run or a repo's releases, or the notifications of a repo or org."`
-	Target WatchTargetCmd `cmd:"" name:"target" default:"withargs" help:"Watch what a provider's target names, like linear ENG-123, or a URL or ID that one provider claims."`
-}
-
-type WatchTargetCmd struct {
-	Target    []string `arg:"" name:"provider target" help:"A provider and its target (linear ENG-123), or a target alone that one provider's patterns claim (a Linear issue URL), else a GitHub URL or a subject as kelpie status lists it."`
+	Target    []string `arg:"" name:"provider target" help:"A provider and its target (github acme/api#7, linear ENG-123, github alone for the current directory's repo), a target alone that one provider's patterns claim (a pull request or Linear issue URL), or a subject as kelpie status lists it."`
 	Workspace string   `help:"Pane or terminal to prompt. Default: the one this runs in."`
 }
 
-func (c *WatchTargetCmd) Run(ctx context.Context, g *Globals) error {
+func (c *WatchCmd) Run(ctx context.Context, g *Globals) error {
 	workspace, err := callerWorkspace(c.Workspace)
 	if err != nil {
 		return err
@@ -274,7 +268,7 @@ func (c *WatchTargetCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	subjects, err := resolve(ctx, cfg, c.Target, func(s string) (core.Subject, error) { return githubWatchTarget(ctx, s) })
+	subjects, err := resolve(ctx, cfg, c.Target)
 	if err != nil {
 		return err
 	}
@@ -284,39 +278,6 @@ func (c *WatchTargetCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 	return nil
-}
-
-type WatchGitHubCmd struct {
-	Target    string `arg:"" optional:"" help:"Pull request, issue or workflow run URL, or owner/repo#number; a repo's releases URL (https://github.com/owner/repo/releases) for its releases; owner/repo or an org (or a GitHub URL of either) for its notifications. Default: the notifications of the current directory's repo."`
-	Workspace string `help:"Pane or terminal to prompt. Default: the one this runs in."`
-}
-
-func (c *WatchGitHubCmd) Run(ctx context.Context) error {
-	workspace, err := callerWorkspace(c.Workspace)
-	if err != nil {
-		return err
-	}
-	subject, err := githubWatchTarget(ctx, c.Target)
-	if err != nil {
-		return err
-	}
-	return watch(ctx, subject, workspace)
-}
-
-// githubWatchTarget is githubTarget, checking that an org exists: the
-// notifications of one that does not are just always empty, so catch a typo
-// here. The daemon's first poll checks a repo or a PR.
-func githubWatchTarget(ctx context.Context, target string) (core.Subject, error) {
-	subject, err := githubTarget(ctx, target)
-	if err != nil {
-		return "", err
-	}
-	if owner, ok := strings.CutPrefix(string(subject), "github-inbox:"); ok && !strings.Contains(owner, "/") {
-		if err := exec.CommandContext(ctx, "gh", "api", "users/"+owner, "--silent").Run(); err != nil {
-			return "", fmt.Errorf("no GitHub org or user %s (gh api users/%s: %w)", owner, owner, err)
-		}
-	}
-	return subject, nil
 }
 
 func watch(ctx context.Context, subject core.Subject, workspace string) error {
@@ -331,36 +292,12 @@ func watch(ctx context.Context, subject core.Subject, workspace string) error {
 	return nil
 }
 
-// githubTarget resolves what watch github and unwatch github were given. An
-// empty target means the notifications of the current directory's repo, as
-// gh resolves it.
-func githubTarget(ctx context.Context, s string) (core.Subject, error) {
-	if s == "" {
-		out, err := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").Output()
-		if err != nil {
-			return "", fmt.Errorf("no GitHub repo in the current directory (gh repo view: %w); pass a pull request, owner/repo or an org", err)
-		}
-		s = strings.TrimSpace(string(out))
-	}
-	return core.GitHubSubject(s, func(owner, name, number string) (bool, error) {
-		// The issues endpoint serves PRs too, with a pull_request key.
-		out, err := exec.CommandContext(ctx, "gh", "api", fmt.Sprintf("repos/%s/%s/issues/%s", owner, name, number), "--jq", ".pull_request != null").Output()
-		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return false, fmt.Errorf("gh api: %s", strings.TrimSpace(string(ee.Stderr)))
-		} else if err != nil {
-			return false, fmt.Errorf("gh api: %w", err)
-		}
-		return strings.TrimSpace(string(out)) == "true", nil
-	})
-}
-
 type UnwatchCmd struct {
-	Subject UnwatchSubjectCmd `cmd:"" name:"subject" default:"withargs" help:"Stop watching a subject as kelpie status lists it, or a provider's target, like linear ENG-123."`
-	GitHub  UnwatchGitHubCmd  `cmd:"" name:"github" help:"Stop watching a pull request, an issue, a workflow run or a repo's releases, or the notifications of a repo or org."`
+	Subject UnwatchSubjectCmd `cmd:"" name:"subject" default:"withargs" help:"Stop watching a subject as kelpie status lists it, or a provider's target, like github acme/api#7 or linear ENG-123."`
 }
 
 type UnwatchSubjectCmd struct {
-	Target    []string `arg:"" name:"subject or provider target" help:"Subject as kelpie status lists it (github-inbox:prometheus), a provider and its target (linear ENG-123), or a target alone that one provider claims."`
+	Target    []string `arg:"" name:"subject or provider target" help:"Subject as kelpie status lists it (github-inbox:prometheus), a provider and its target (github prometheus, linear ENG-123), or a target alone that one provider claims."`
 	Workspace string   `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
 }
 
@@ -375,7 +312,7 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
 		if err != nil {
 			return err
 		}
-		if subjects, err = resolve(ctx, cfg, c.Target, func(s string) (core.Subject, error) { return githubTarget(ctx, s) }); err != nil {
+		if subjects, err = resolve(ctx, cfg, c.Target); err != nil {
 			return err
 		}
 	}
@@ -385,19 +322,6 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 	return nil
-}
-
-type UnwatchGitHubCmd struct {
-	Target    string `arg:"" optional:"" help:"Pull request, issue or workflow run URL, or owner/repo#number; a repo's releases URL for its releases; owner/repo or an org for its notifications. Default: the notifications of the current directory's repo."`
-	Workspace string `help:"Pane or terminal whose watch to end; others keep theirs. Default: the one this runs in."`
-}
-
-func (c *UnwatchGitHubCmd) Run(ctx context.Context) error {
-	subject, err := githubTarget(ctx, c.Target)
-	if err != nil {
-		return err
-	}
-	return unwatch(ctx, subject, c.Workspace)
 }
 
 func unwatch(ctx context.Context, subject core.Subject, workspace string) error {
@@ -420,7 +344,7 @@ func (StatusCmd) Run(ctx context.Context) error {
 		return err
 	}
 	if len(st.Watches) == 0 {
-		fmt.Println("watching nothing; run kelpie watch github <pr or issue url, repo or org> or kelpie watch <provider> <target> inside an agent's pane")
+		fmt.Println("watching nothing; run kelpie watch <provider> <target>, like kelpie watch github <pr or issue url, repo or org>, inside an agent's pane")
 	}
 	for _, w := range st.Watches {
 		fmt.Printf("%-50s pane %-8s since %s\n", w.Subject, w.Workspace, w.Since.Format("Jan 2 15:04"))

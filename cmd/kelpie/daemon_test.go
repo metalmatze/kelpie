@@ -31,7 +31,7 @@ func TestListSourceKeepsSnapshotsByDefault(t *testing.T) {
 }
 
 func TestForgetMissing(t *testing.T) {
-	cfg, err := config.Parse(t.Context(), []byte(linearProvider(t)))
+	cfg, err := config.Parse(t.Context(), []byte(providers(t)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,6 +33,7 @@ credential:
 branches:
   - { subject: "acme:{id}", branch: '{id}' }
 targets: ['^ACME-\d+$']
+me: [me]
 sources:
   - name: acme
     adapter: cli
@@ -55,11 +56,10 @@ func TestProviderLayer(t *testing.T) {
 	if len(c.Skipped) > 0 || len(c.Warnings) > 0 {
 		t.Fatalf("skipped %v, warnings %v", c.Skipped, c.Warnings)
 	}
-	n := names(c)
-	if !slices.Contains(n, "github-pr") || !slices.Contains(n, "acme") || !slices.Contains(n, "acme-item") {
+	if n := names(c); !slices.Equal(n, []string{"acme", "acme-item"}) {
 		t.Fatalf("sources %v", n)
 	}
-	if c.From["acme"] != "acme" || c.From["github-pr"] != "" {
+	if c.From["acme"] != "acme" || c.From["acme-item"] != "acme" {
 		t.Errorf("from %v", c.From)
 	}
 	d, ok := c.Provider("acme")
@@ -130,7 +130,7 @@ func TestProviderSkipped(t *testing.T) {
 			if _, ok := c.Source("acme"); ok || len(c.Provided) > 0 {
 				t.Error("a skipped provider contributed")
 			}
-			if !slices.Contains(names(c), "github-pr") {
+			if c.Hosts.Herdr.Bin != "herdr" {
 				t.Error("the default did not load")
 			}
 			if time.Since(start) > 3*time.Second {
@@ -153,7 +153,7 @@ func TestEffectiveNamesProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"# describe contributed sources acme, acme-item; credential acme; branch patterns for acme:{id}; 1 target patterns\n  acme:",
+		"# describe contributed sources acme, acme-item; credential acme; branch patterns for acme:{id}; 1 target patterns; @me\n  acme:",
 		"# skipped, see the warnings\n  gone:",
 		"  # from provider acme\n  - name: acme\n",
 		"  # from provider acme\n  - name: acme-item\n",
@@ -162,9 +162,6 @@ func TestEffectiveNamesProviders(t *testing.T) {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("config show lacks %q", want)
 		}
-	}
-	if strings.Contains(string(out), "# from provider acme\n  - name: github-pr") {
-		t.Error("a default source claims to come from a provider")
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "provider gone skipped") {
 		t.Errorf("warnings %v", warnings)

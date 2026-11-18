@@ -25,7 +25,7 @@ import (
 var (
 	DescribeTimeout = 10 * time.Second
 	SubjectTimeout  = 30 * time.Second
-	VerifyTimeout   = 30 * time.Second
+	WhoTimeout      = 30 * time.Second
 )
 
 // Describe runs `<command> describe` and returns what it printed.
@@ -58,17 +58,25 @@ func Subject(ctx context.Context, command []string, args []string) ([]core.Subje
 	return subjects, nil
 }
 
-// Verify runs `<command> <verify...>` with token on stdin and returns who it
-// belongs to, the first line printed. The token is redacted from errors, in
-// case the provider echoes what the vendor rejected.
-func Verify(ctx context.Context, command, verify []string, token string) (string, error) {
-	out, err := run(ctx, VerifyTimeout, command, strings.NewReader(token+"\n"), verify...)
+// Who runs `<command> <args...>` and returns the first line printed: whose
+// a credential is, with token on stdin (a credential's verify), or whom the
+// provider acts as, with token empty (its me). The token is redacted from
+// errors, in case the provider echoes what the vendor rejected.
+func Who(ctx context.Context, command, args []string, token string) (string, error) {
+	var stdin io.Reader
+	if token != "" {
+		stdin = strings.NewReader(token + "\n")
+	}
+	out, err := run(ctx, WhoTimeout, command, stdin, args...)
 	if err != nil {
 		return "", redact(err, token)
 	}
 	who, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	if who == "" {
-		return "", fmt.Errorf("%s printed nobody", strings.Join(append([]string{filepath.Base(command[0])}, verify...), " "))
+		return "", fmt.Errorf("%s printed nobody", strings.Join(append([]string{filepath.Base(command[0])}, args...), " "))
+	}
+	if token == "" {
+		return who, nil
 	}
 	return strings.ReplaceAll(who, token, "[redacted]"), nil
 }

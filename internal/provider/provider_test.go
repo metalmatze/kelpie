@@ -35,13 +35,17 @@ func TestSubject(t *testing.T) {
 }
 
 // The token reaches verify on stdin only, and never comes back in an error.
-func TestVerify(t *testing.T) {
-	who, err := Verify(t.Context(), sh(`[ "$1" = check ] && read -r tok && [ "$tok" = s3cret ] && echo alice`), []string{"check"}, "s3cret")
+func TestWho(t *testing.T) {
+	who, err := Who(t.Context(), sh(`[ "$1" = check ] && read -r tok && [ "$tok" = s3cret ] && echo alice`), []string{"check"}, "s3cret")
 	if err != nil || who != "alice" {
 		t.Fatalf("got %q, %v", who, err)
 	}
-	_, err = Verify(t.Context(), sh(`read -r tok; echo "rejected header: $tok" >&2; exit 1`), []string{"verify"}, "s3cret")
+	_, err = Who(t.Context(), sh(`read -r tok; echo "rejected header: $tok" >&2; exit 1`), []string{"verify"}, "s3cret")
 	if err == nil || strings.Contains(err.Error(), "s3cret") || !strings.Contains(err.Error(), "[redacted]") {
 		t.Errorf("got %v", err)
+	}
+	// Without a token, as for me, stdin is closed rather than an empty line.
+	if who, err := Who(t.Context(), sh(`read -r x && echo "read $x" || echo octocat`), []string{"me"}, ""); err != nil || who != "octocat" {
+		t.Errorf("me: %q, %v", who, err)
 	}
 }
