@@ -388,15 +388,23 @@ func TestGitHubDiscussionSource(t *testing.T) {
 		terminal                    bool
 	}{
 		{file: "1.json"},
-		{file: "2.json", kind: "comment.added", summary: "1 new by carol", actor: "carol",
-			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){comments(last:1){nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}}}}`},
+		{
+			file: "2.json", kind: "comment.added", summary: "1 new by carol", actor: "carol",
+			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){comments(last:1){nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}}}}`,
+		},
 		// Two authors: no actor, so a reply of your own cannot hide the other.
-		{file: "3.json", kind: "reply.added", summary: "2 new by alice, copilot[bot], to comments by bob, carol",
-			fetch: `gh api graphql -f query={nodes(ids:["DC_bob","DC_carol"]){...on DiscussionComment{url author{login} body replies(last:10){nodes{author{login} body}}}}}`},
-		{file: "4.json", kind: "answer.marked", summary: "the comment by carol marked as the answer by alice", actor: "alice",
-			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){answer{url author{login} body}}}}`},
-		{file: "5.json", kind: "state.closed", summary: "closed as resolved; kelpie stops watching", terminal: true,
-			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){title body answer{url author{login}} comments(last:20){totalCount nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}}}}`},
+		{
+			file: "3.json", kind: "reply.added", summary: "2 new by alice, copilot[bot], to comments by bob, carol",
+			fetch: `gh api graphql -f query={nodes(ids:["DC_bob","DC_carol"]){...on DiscussionComment{url author{login} body replies(last:10){nodes{author{login} body}}}}}`,
+		},
+		{
+			file: "4.json", kind: "answer.marked", summary: "the comment by carol marked as the answer by alice", actor: "alice",
+			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){answer{url author{login} body}}}}`,
+		},
+		{
+			file: "5.json", kind: "state.closed", summary: "closed as resolved; kelpie stops watching", terminal: true,
+			fetch: `gh api graphql -f query={repository(owner:"acme",name:"api"){discussion(number:31){title body answer{url author{login}} comments(last:20){totalCount nodes{url author{login} body replies(last:10){totalCount nodes{author{login} body}}}}}}}`,
+		},
 	} {
 		events := observeFixtureIn(t, "github-discussion", m, d, parent, step.file)
 		if step.kind == "" {

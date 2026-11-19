@@ -7,8 +7,6 @@
 - **Any agent.** Claude Code, Codex, or any other coding agent in [herdr](https://herdr.dev) (the terminal UI or herdr GPUI) or [Orca](docs/hosts.md#orca). kelpie types into the agent's terminal, so the agent needs no plugin or MCP server to receive updates.
 - **Anything you want watched.** GitHub and Linear today, Kubernetes next. Each integration is a small provider, and a source is a command plus a jq mapping in YAML, so you can add your own.
 
-<!-- TODO(demo): a 20-second clip: CI fails on a PR, the [kelpie] update appears in the agent's pane, the agent fetches the logs and pushes a fix. -->
-
 A coding agent's turn ends when it pushes. It never sees CI fail ten minutes later, the reviewer ask for changes, or the Linear issue move back to Todo. So you check yourself, copy the failing check or the review into the agent's terminal, and do it again for the next one.
 
 kelpie does that part for you. It runs a small daemon on your machine, polls only what you asked it to watch, and when something changes, it prompts the agent in its own terminal:
@@ -180,6 +178,12 @@ Bug reports and ideas are welcome in [issues](https://github.com/metalmatze/kelp
 go build ./cmd/...
 go vet ./...
 go test ./...
+```
+
+CI also checks that the code is formatted with [gofumpt](https://github.com/mvdan/gofumpt):
+
+```sh
+go run mvdan.cc/gofumpt@v0.12.0 -w .
 ```
 
 ## Why "kelpie"?
