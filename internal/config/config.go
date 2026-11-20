@@ -52,9 +52,11 @@ type Config struct {
 	// copy of an older default does without the person meaning to.
 	Warnings []string `yaml:"-"`
 	// Provided holds the describe output of every provider that loaded, in
-	// name order. Skipped says why the others did not.
-	Provided []Described `yaml:"-"`
-	Skipped  []string    `yaml:"-"`
+	// name order. ExternalHosts holds the same for enabled external hosts.
+	// Skipped says why the others did not load.
+	Provided      []Described     `yaml:"-"`
+	ExternalHosts []DescribedHost `yaml:"-"`
+	Skipped       []string        `yaml:"-"`
 	// From names the provider a source came from, for kelpie config show.
 	From map[string]string `yaml:"-"`
 }
@@ -65,6 +67,8 @@ type Hosts struct {
 	Herdr Herdr `yaml:"herdr"`
 	Orca  Orca  `yaml:"orca"`
 	HC    HC    `yaml:"hc"`
+	// External registers out-of-tree host binaries under hosts:<name>.
+	External map[string]ExternalHost `yaml:",inline"`
 }
 
 // HC is herdr-core, the terminal runtime behind the Herdr desktop app. The
@@ -364,6 +368,20 @@ func (c *Config) annotate(doc *yaml.Node) {
 	for i := 0; i+1 < len(doc.Content); i += 2 {
 		key, val := doc.Content[i], doc.Content[i+1]
 		switch key.Value {
+		case "hosts":
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				name := val.Content[j].Value
+				eh, ok := c.Hosts.External[name]
+				if !ok || !eh.IsEnabled() {
+					continue
+				}
+				k := slices.IndexFunc(c.ExternalHosts, func(d DescribedHost) bool { return d.Name == name })
+				if k < 0 {
+					val.Content[j].HeadComment = "skipped, see the warnings"
+					continue
+				}
+				val.Content[j].HeadComment = c.ExternalHosts[k].summary()
+			}
 		case "providers":
 			for j := 0; j+1 < len(val.Content); j += 2 {
 				name := val.Content[j].Value
@@ -417,8 +435,14 @@ func layer(ctx context.Context, file []byte) (*Config, error) {
 	if err := decode(file, &cfg); err != nil {
 		return nil, err
 	}
+	if err := validateExternalHosts(cfg.Hosts.External); err != nil {
+		return nil, err
+	}
 
 	cfg.Provided, cfg.Skipped = describeAll(ctx, cfg.Providers)
+	var hostSkipped []string
+	cfg.ExternalHosts, hostSkipped = describeAllHosts(ctx, cfg.Hosts.External)
+	cfg.Skipped = append(cfg.Skipped, hostSkipped...)
 	cfg.From = map[string]string{}
 	sources := slices.Clone(builtin)
 	for _, p := range cfg.Provided {

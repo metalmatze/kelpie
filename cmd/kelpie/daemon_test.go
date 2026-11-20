@@ -14,6 +14,8 @@ import (
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/host"
+	"github.com/metalmatze/kelpie/internal/host/external"
+	"github.com/metalmatze/kelpie/internal/route"
 	"github.com/metalmatze/kelpie/internal/schedule"
 	"github.com/metalmatze/kelpie/internal/state"
 )
@@ -150,5 +152,89 @@ func TestRewatchTakesBaselineAtOnce(t *testing.T) {
 	snap, ok := st.Snapshot("releases", "rel:acme")
 	if !ok || snap["latest"] != "2026-11-10T00:00:00Z" {
 		t.Fatalf("baseline after re-watch: %v %v, want the release published before it", snap, ok)
+	}
+}
+
+// An external host without local git paths works end to end: Watch binds the
+// prefixed workspace, transitions deliver through the binary, and a Resync
+// dropping that workspace unbinds only it without touching other hosts.
+func TestExternalHostEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dir := t.TempDir()
+	wsFile := filepath.Join(dir, "workspaces.json")
+	delivered := filepath.Join(dir, "delivered.txt")
+	if err := os.WriteFile(wsFile, []byte(`[{"id":"s1","state":"idle"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	host.Register("exttest", false)
+	h := external.New("exttest", []string{"sh", "-c", `
+case "$1" in
+  workspaces) cat "` + wsFile + `" ;;
+  deliver)    [ "$2" = s1 ] && cat > "` + delivered + `" ;;
+  *)          exit 1 ;;
+esac`, "exttest"}, time.Hour, nil)
+
+	st := state.NewMemory()
+	b := bind.New(st, false)
+	b.Await("exttest", "herdr")
+	r := route.New(ctx, config.Delivery{
+		Debounce:       config.Duration{Duration: 10 * time.Millisecond},
+		UrgentDebounce: config.Duration{Duration: 10 * time.Millisecond},
+		Retry:          config.Duration{Duration: 50 * time.Millisecond},
+		Prefix:         "[kelpie]",
+	}, route.NewRules(config.Rules{}, nil), b, []host.Host{h})
+
+	d := &daemon{
+		ctx:      ctx,
+		binder:   b,
+		router:   r,
+		hosts:    []host.Host{h},
+		runners:  map[string]*runner{},
+		lastSeen: map[string]string{},
+		badges:   map[core.Subject]string{},
+		shown:    map[string]string{},
+	}
+	var err error
+	if d.sched, err = schedule.New(filepath.Join(dir, "reminders.json"), 0, func(core.Reminder, time.Duration) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	d.refreshWorkspaces()
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	b.Bind(core.Binding{Subject: "github:acme/api#7", Workspace: "exttest:s1", Via: "explicit"})
+	b.Bind(core.Binding{Subject: "github:acme/api#8", Workspace: "w1:p1", Via: "explicit"})
+
+	r.Route(core.Event{
+		Subject: "github:acme/api#7",
+		Kind:    "checks.failed",
+		Summary: "1 failed: test",
+		Urgent:  true,
+		Fetch:   []string{"gh", "pr", "checks", "7", "-R", "acme/api"},
+	})
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if body, err := os.ReadFile(delivered); err == nil && len(body) > 0 {
+			if !strings.Contains(string(body), "github:acme/api#7 checks.failed: 1 failed: test") {
+				t.Fatalf("unexpected delivery:\n%s", string(body))
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("external host did not receive delivery")
+		}
+	}
+
+	// Closing the external workspace unbinds only exttest:s1, leaving herdr's
+	// watch intact.
+	if err := os.WriteFile(wsFile, []byte(`[]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshWorkspaces()
+	if _, ok := b.Binding("github:acme/api#7", "exttest:s1"); ok {
+		t.Fatal("closed external workspace kept its binding")
+	}
+	if _, ok := b.Binding("github:acme/api#8", "w1:p1"); !ok {
+		t.Fatal("external host resync dropped herdr's binding")
 	}
 }

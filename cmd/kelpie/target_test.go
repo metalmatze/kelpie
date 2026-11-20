@@ -12,6 +12,7 @@ import (
 
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/core"
+	"github.com/metalmatze/kelpie/internal/host/external"
 	"github.com/metalmatze/kelpie/internal/provider"
 )
 
@@ -164,5 +165,50 @@ func TestLinearVerifyWithoutKey(t *testing.T) {
 	_, err := provider.Who(t.Context(), []string{build(t, "kelpie-linear")}, []string{"verify"}, "")
 	if err == nil || !strings.Contains(err.Error(), "kelpie-linear verify: no API key on stdin") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCallerWorkspaceExternalHost(t *testing.T) {
+	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HC_TERMINAL_ID", "")
+	t.Setenv("ORCA_WORKTREE_ID", "")
+	t.Setenv("ORCA_AGENT_SESSION_ID", "")
+	t.Setenv("TERM_PROGRAM", "")
+
+	ext := []config.DescribedHost{{
+		Description: external.Description{
+			Name:        "custom",
+			TermProgram: "customterm",
+			CallerEnv:   []string{"TEST_CUSTOM_WS"},
+		},
+		Command: []string{"sh", "-c", `[ "$1" = caller ] && printf '%s\n' "$TEST_CUSTOM_WS"`, "custom"},
+	}}
+
+	// Outside every host: error names configured external hosts.
+	t.Setenv("TEST_CUSTOM_WS", "")
+	if _, err := callerWorkspace(t.Context(), "", ext); err == nil || !strings.Contains(err.Error(), "external host (custom)") {
+		t.Fatalf("outside all hosts: %v", err)
+	}
+
+	// Explicit --workspace always wins.
+	if got, err := callerWorkspace(t.Context(), "custom:manual", ext); err != nil || got != "custom:manual" {
+		t.Fatalf("explicit flag: %q %v", got, err)
+	}
+
+	// External host alone matches when its caller env is set.
+	t.Setenv("TEST_CUSTOM_WS", "s7")
+	if got, err := callerWorkspace(t.Context(), "", ext); err != nil || got != "custom:s7" {
+		t.Fatalf("external caller: %q %v", got, err)
+	}
+
+	// When nested inside herdr, TERM_PROGRAM picks the innermost host.
+	t.Setenv("HERDR_PANE_ID", "w1:p2")
+	t.Setenv("TERM_PROGRAM", "customterm")
+	if got, err := callerWorkspace(t.Context(), "", ext); err != nil || got != "custom:s7" {
+		t.Fatalf("TERM_PROGRAM=customterm: %q %v", got, err)
+	}
+	t.Setenv("TERM_PROGRAM", "herdr")
+	if got, err := callerWorkspace(t.Context(), "", ext); err != nil || got != "w1:p2" {
+		t.Fatalf("TERM_PROGRAM=herdr: %q %v", got, err)
 	}
 }
