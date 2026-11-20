@@ -90,7 +90,7 @@ sources:
       query($owner: String!, $name: String!, $number: Int!) {
         repository(owner: $owner, name: $name) {
           pullRequest(number: $number) {
-            number url title body state isDraft baseRefName mergeable reviewDecision
+            number url title body state isDraft isInMergeQueue baseRefName mergeable reviewDecision
             autoMergeRequest { enabledAt }
             labels(first: 50) { nodes { name } }
             reviewRequests(first: 50) { nodes { requestedReviewer {
@@ -111,13 +111,32 @@ sources:
                 ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
               } } }
             } } }
+            # Merge queue history, oldest first, with the pushes it is
+            # counted against.
+            timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) { nodes {
+              __typename
+              ... on AddedToMergeQueueEvent { createdAt actor { ...author } }
+              ... on RemovedFromMergeQueueEvent { createdAt reason actor { ...author } beforeCommit { oid } }
+            } }
           }
         }
       }
     # The title and description are stored to detect edits but never enter a
     # prompt: summaries carry only states, counts, logins and branch names.
+    #
+    # A merge through the queue is a removal with reason "merged" too; it is
+    # not a removal here. queue_removed_at is the newest real removal, so it
+    # only moves forward even when a push resets queue_removals, the
+    # removals since the newest push, in the same poll. beforeCommit is the
+    # merge-group commit the queue tested, the head of its workflow runs.
     map: |
-      .data.repository.pullRequest | .commits.nodes[0].commit as $commit | {
+      .data.repository.pullRequest | .commits.nodes[0].commit as $commit
+      | [.timelineItems.nodes[]?] as $tl
+      | ([$tl | to_entries[] | select(.value.__typename == "PullRequestCommit" or .value.__typename == "HeadRefForcePushedEvent") | .key] | max // -1) as $push
+      | [$tl | to_entries[] | select(.value.__typename == "RemovedFromMergeQueueEvent" and .value.reason != "merged")] as $removals
+      | ($removals | last | .value) as $removal
+      | ([$tl[] | select(.__typename == "AddedToMergeQueueEvent")] | last) as $addition
+      | {
         url: .url,
         fields: {
           number, title, body, state, isDraft, mergeable, reviewDecision,
@@ -131,6 +150,13 @@ sources:
           # FAILURE while the rest still run.
           checks: ([$commit.statusCheckRollup.contexts.nodes[]?] | checks_summary.state),
           auto_merge: (.autoMergeRequest != null),
+          in_queue: (.isInMergeQueue // false),
+          queue_added_by: ($addition.actor | login),
+          queue_removed_at: $removal.createdAt,
+          queue_removals: ([$removals[] | select(.key > $push)] | length),
+          queue_reason: ($removal.reason // ""),
+          queue_removed_by: ($removal.actor | login),
+          queue_merge_commit: ($removal.beforeCommit.oid // ""),
           labels: ([.labels.nodes[].name] | sort),
           review_requests: ([.reviewRequests.nodes[].requestedReviewer | (.login // .slug)] | sort),
           comments: .comments.totalCount,
@@ -147,6 +173,7 @@ sources:
       + (if .isDraft then " draft"
          else {APPROVED: " approved", CHANGES_REQUESTED: " changes requested"}[.reviewDecision // ""] // "" end)
       + (if .mergeable == "CONFLICTING" then " conflict" else "" end)
+      + (if .in_queue then " queued" else "" end)
     # Checks transitions live in github-checks, which this source starts.
     transitions:
       # Count reviews, not reviewDecision: a second "changes requested" or a
@@ -213,6 +240,26 @@ sources:
         ignore: [UNKNOWN]
         kind: merge.conflict
         summary: '"merge conflict with \(.base)"'
+      # An entry that comes and goes between two polls is reported only by
+      # its removal (or the merge).
+      - field: in_queue
+        to: true
+        kind: queue.added
+        actor: .queue_added_by
+        summary: '"added to the merge queue by \(.queue_added_by)"'
+      # The queue removes a PR as github-merge-queue[bot], which the default
+      # ignore_actors "*[bot]" would drop: a bot remover leaves the actor
+      # empty. A person's removal keeps theirs, so your own stays dropped.
+      # The count lets the agent tell a first failure from a repeat.
+      - field: queue_removed_at
+        increased: true
+        kind: queue.removed
+        urgent: true
+        actor: 'if .queue_removed_by | endswith("[bot]") then "" else .queue_removed_by end'
+        summary: '"removed from the merge queue by \(.queue_removed_by): \(.queue_reason | gsub("_"; " "))"
+          + (if .queue_removals > 1 then "; removed \(.queue_removals) times since the last push" else "" end)'
+        fetch: 'if .queue_reason == "failed_checks" and .queue_merge_commit != "" then ["gh", "run", "list", "-R", .repo, "--commit", .queue_merge_commit]
+          else ["gh", "pr", "view", (.number | tostring), "-R", .repo] end'
       - field: state
         to: MERGED
         kind: state.merged

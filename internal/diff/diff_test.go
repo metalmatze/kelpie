@@ -471,3 +471,106 @@ func TestGitHubPRSource(t *testing.T) {
 		}
 	}
 }
+
+// The fixtures are synthetic responses for acme/api#42 in a repo with a merge
+// queue: queued (1), removed by the queue for failed checks (2), queued again
+// by bob (3), removed again with the same head (4), a push, a re-queue and a
+// removal all between two polls (5), queued by the user's own login (6),
+// taken out by alice (7), and merged through the queue (8).
+func TestGitHubPRSourceMergeQueue(t *testing.T) {
+	m, d := githubSource(t, "github-pr")
+	parent := &core.Observation{
+		Subject: "github:acme/api#42",
+		Fields:  map[string]any{"owner": "acme", "name": "api", "number": "42"},
+	}
+	runs := func(sha string) string { return "gh run list -R acme/api --commit " + sha }
+	const view = "gh pr view 42 -R acme/api --comments"
+	for _, step := range []struct {
+		file                        string
+		kind, summary, actor, fetch string // empty kind: no event
+		urgent, terminal            bool
+	}{
+		{file: "queue-1.json"},
+		{
+			file: "queue-2.json", kind: "queue.removed", urgent: true,
+			summary: "removed from the merge queue by github-merge-queue[bot]: failed checks",
+			fetch:   runs("m1m1m1m1m1m1m1m1m1m1m1m1m1m1m1m1m1m1m1m1"),
+		},
+		{file: "queue-3.json", kind: "queue.added", summary: "added to the merge queue by bob", actor: "bob", fetch: view},
+		{
+			file: "queue-4.json", kind: "queue.removed", urgent: true,
+			summary: "removed from the merge queue by github-merge-queue[bot]: failed checks; removed 2 times since the last push",
+			fetch:   runs("m2m2m2m2m2m2m2m2m2m2m2m2m2m2m2m2m2m2m2m2"),
+		},
+		// The push resets the count, and the count dropping does not hide the
+		// removal. The queue entry came and went between polls: no queue.added.
+		{
+			file: "queue-5.json", kind: "queue.removed", urgent: true,
+			summary: "removed from the merge queue by github-merge-queue[bot]: failed checks",
+			fetch:   runs("m3m3m3m3m3m3m3m3m3m3m3m3m3m3m3m3m3m3m3m3"),
+		},
+		// The actor is the user's login: ignore_actors @me drops it.
+		{file: "queue-6.json", kind: "queue.added", summary: "added to the merge queue by me", actor: "me", fetch: view},
+		{
+			file: "queue-7.json", kind: "queue.removed", urgent: true, actor: "alice",
+			summary: "removed from the merge queue by alice: manually removed; removed 2 times since the last push",
+			fetch:   "gh pr view 42 -R acme/api",
+		},
+		{file: "queue-8.json", kind: "state.merged", summary: "merged; kelpie stops watching", urgent: true, terminal: true, fetch: view},
+	} {
+		// The push in queue-5.json also fires commits.pushed; only the queue
+		// and state events are under test.
+		var events []core.Event
+		for _, e := range observeFixtureIn(t, "github-pr", m, d, parent, step.file) {
+			if strings.HasPrefix(e.Kind, "queue.") || strings.HasPrefix(e.Kind, "state.") {
+				events = append(events, e)
+			}
+		}
+		if step.kind == "" {
+			if len(events) > 0 {
+				t.Fatalf("%s: unexpected events %v", step.file, kinds(events))
+			}
+			continue
+		}
+		if len(events) != 1 {
+			t.Fatalf("%s: got events %v, want one %s", step.file, kinds(events), step.kind)
+		}
+		e := events[0]
+		if e.Kind != step.kind || e.Summary != step.summary || e.Actor != step.actor || e.Urgent != step.urgent || e.Terminal != step.terminal || strings.Join(e.Fetch, " ") != step.fetch {
+			t.Errorf("%s: got %s %q actor %q urgent %v terminal %v fetch %q,\nwant %s %q actor %q urgent %v terminal %v fetch %q",
+				step.file, e.Kind, e.Summary, e.Actor, e.Urgent, e.Terminal, strings.Join(e.Fetch, " "),
+				step.kind, step.summary, step.actor, step.urgent, step.terminal, step.fetch)
+		}
+	}
+}
+
+func TestGitHubPRBadgeQueued(t *testing.T) {
+	m, _ := githubSource(t, "github-pr")
+	cfg := githubConfig(t)
+	src, _ := cfg.Source("github-pr")
+	badge, err := NewExpr(src.Badge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &core.Observation{
+		Subject: "github:acme/api#42",
+		Fields:  map[string]any{"owner": "acme", "name": "api", "number": "42"},
+	}
+	for file, want := range map[string]string{
+		"queue-1.json": "#42 approved queued",
+		"queue-2.json": "#42 approved",
+	} {
+		raw, err := os.ReadFile("../../testdata/github-pr/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o, err := m.Map(raw, parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := badge.Eval(o[0].Fields, nil)
+		if err != nil || got != want {
+			t.Errorf("%s: badge %v, %v; want %q", file, got, err, want)
+		}
+	}
+}
