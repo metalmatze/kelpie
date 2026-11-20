@@ -215,6 +215,16 @@ kelpie auth logout slack
 
 **Only required checks decide pass or fail.** A check like DCO ends as ACTION_REQUIRED and never turns green without a person, so with every other check green the PR's rollup stays FAILURE. kelpie reports such optional failures alongside the result (`required checks passed (3); optional failing: DCO (action required)`) for the agent to pass on. A repo without required checks treats all checks as required.
 
+### Merge queues: a PR that leaves the queue without merging
+
+In a repo with a GitHub merge queue, a queued PR is tested again on a merge-group commit, and `github-merge-queue[bot]` takes it out of the queue when those checks fail. The PR page shows little of this, and the PR's own checks stay green, so without an event the PR would sit unmerged until someone noticed.
+
+- **From the timeline, in the PR's poll.** `github-pr` also asks for `isInMergeQueue` and the PR's last 100 timeline items of four kinds: commits, force pushes, and additions to and removals from the queue. No extra source and no extra call.
+- **A high-water mark fires, a count describes.** `queue.removed` fires when `queue_removed_at`, the `createdAt` of the newest removal, increases. A merge through the queue is a removal too, with reason `merged`, and is left out, so a merge reports only `state.merged`. `queue_removals` counts the removals after the newest commit or force push, for the summary (`removed 2 times since the last push`) that tells the agent to stop re-queuing; it lives in GitHub's history, so a restart does not reset it. Firing on the count would miss a removal whose poll also saw a push, since the push resets it. A queue entry that comes and goes between two polls fires only its removal.
+- **The run is one command away.** A removal's `beforeCommit` is the merge-group commit the queue tested, and that commit is the head of the merge-group workflow runs. For `failed_checks` the fetch is `gh run list -R <repo> --commit <sha>`, which lists those runs and their conclusions. Other reasons (a person removed it, a conflict) fetch the PR.
+- **A bot remover leaves no actor.** The default `ignore_actors` drops `*[bot]`, and the queue removes PRs as `github-merge-queue[bot]`, so the actor is empty when the remover is a bot, and the summary names it. A person's removal keeps their login, so your own stays dropped by `@me`. `queue.added` takes whoever queued the PR, so queuing it yourself is not news; the badge shows `queued` while it waits.
+- **The re-queue decision is the agent's.** The skill tells it to read the failed run, re-queue a flaky or unrelated failure once per push, and otherwise ask; kelpie only reports.
+
 ### Issues are watched like PRs, under their own subject
 
 `kelpie watch github https://github.com/org/api/issues/17` watches one issue: `github-issue:org/api#17`, polled by the `github-issue` source with one `gh api graphql` call every 60 s, until the issue closes or the pane goes away.
