@@ -240,8 +240,6 @@ sources:
         ignore: [UNKNOWN]
         kind: merge.conflict
         summary: '"merge conflict with \(.base)"'
-      # An entry that comes and goes between two polls is reported only by
-      # its removal (or the merge).
       - field: in_queue
         to: true
         kind: queue.added
@@ -250,7 +248,6 @@ sources:
       # The queue removes a PR as github-merge-queue[bot], which the default
       # ignore_actors "*[bot]" would drop: a bot remover leaves the actor
       # empty. A person's removal keeps theirs, so your own stays dropped.
-      # The count lets the agent tell a first failure from a repeat.
       - field: queue_removed_at
         increased: true
         kind: queue.removed
