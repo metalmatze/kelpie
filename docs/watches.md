@@ -134,6 +134,8 @@ kelpie compares each poll with the previous one and turns the differences into e
 - `review.submitted` and `comment.added`: someone reviewed or commented.
 - `commits.pushed`: someone else pushed to the branch.
 - `merge.conflict`: the PR conflicts with its base branch.
+- `queue.removed`: the PR left the merge queue without merging, with the reason and who removed it. For failed checks, its fetch lists the merge-group runs the queue tested. It arrives even though the queue acts as `github-merge-queue[bot]`.
+- `queue.added`: someone else put the PR in the merge queue. While it waits, the badge shows `queued`.
 - `state.merged` and `state.closed`: the PR or issue is done, and the watch ends.
 - `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
 - `comment.added`, `reply.added`, `answer.marked` and `answer.unmarked` on a discussion; its `state.closed` ends the watch.
