@@ -1,18 +1,20 @@
-# Hosts: herdr, herdr GPUI and Orca
+# Hosts: herdr, herdr GPUI, Orca and external hosts
 
-kelpie delivers updates through the program the agent runs in, the host. It supports three:
+kelpie delivers updates through the program the agent runs in, the host. It ships with three built-in hosts and can run [external host binaries](#external-hosts) registered in your config:
 
 | Host | Config | Workspace ID | Caller variable | On by default |
 | --- | --- | --- | --- | --- |
 | [herdr](https://herdr.dev), the terminal UI | `hosts.herdr` | a pane, such as `w1:p2` | `$HERDR_PANE_ID` | yes |
 | herdr GPUI, the desktop app, through its core `herdr-core` | `hosts.hc` | `hc:` and the terminal, such as `hc:t7` | `$HC_TERMINAL_ID` | no |
 | [Orca](#orca) | `hosts.orca` | `orca:` and the worktree ID | `$ORCA_WORKTREE_ID`, or `$ORCA_AGENT_SESSION_ID` in a chat | no |
+| [External host](#external-hosts) | `hosts.<name>` | `<name>:` and the host's workspace ID | `<command> caller` | yes, when listed |
 
 `kelpie watch`, `kelpie unwatch` and `kelpie remind` act for the workspace of the terminal they run in. If several caller variables are set, `$TERM_PROGRAM` decides. A herdr pane ID is not the ID of a herdr workspace.
 
 - [herdr](#herdr)
 - [herdr GPUI](#herdr-gpui)
 - [Orca](#orca)
+- [External hosts](#external-hosts)
 - [Planned: Rex](#planned-rex)
 
 ## herdr
@@ -118,6 +120,79 @@ A watch belongs to an Orca worktree, not to one terminal or chat. Run `kelpie wa
 Orca sends no events, so kelpie polls it every `hosts.orca.poll`. Updates go to the agent only while the agent is idle. An agent in a terminal gets them with `orca terminal send`. An agent in a chat gets them with `orca orchestration send`, which posts each update into the chat as a message from `kelpie`. If a worktree has several agents, the one Orca reports a state for and that was active last gets the update. kelpie never starts Orca. While Orca is not running, the updates wait.
 
 Orca has no notification with a title and body. When updates wait longer than `delivery.notify.stuck`, kelpie sets the worktree's unread dot instead. A watch ends when its worktree is removed or archived. The herdr plugin and the sidebar badges are herdr only. With `comment: true`, the badge text goes into the worktree's comment, and kelpie puts your comment back when the worktree has no watch left. [DESIGN.md](../DESIGN.md) has the details in its section "Hosts: herdr and Orca".
+
+## External hosts
+
+Like [providers](configuration.md#providers), a host integration can live in its own binary and language, talking to kelpie only over argv, stdin and stdout. Register it under `hosts:` in your [config file](configuration.md); kelpie runs only what the file names and never searches `PATH` for host binaries.
+
+```yaml
+hosts:
+  myhost:
+    command: [kelpie-host-myhost]
+    poll: 15s      # optional; default 15s
+    enabled: true  # optional; default true when listed
+```
+
+Host names must match `^[a-z][a-z0-9_-]*$` and cannot shadow built-in hosts (`herdr`, `orca`, `hc`). Workspace IDs are prefixed with `<name>:` inside kelpie (`myhost:s1`); the binary always receives and prints raw IDs without the prefix.
+
+kelpie appends one subcommand to `command` on each call:
+
+### `describe`
+
+Called at startup and by `kelpie config show` (10s timeout). Prints YAML or JSON:
+
+```yaml
+kelpie: 1
+name: myhost              # required; must match the key under hosts:
+reports_agent: false      # optional; true if workspaces[].agent distinguishes agents from shells
+term_program: ""          # optional; $TERM_PROGRAM value that wins nested caller detection
+caller_env: [MYHOST_ID]   # optional; skip calling `caller` unless at least one listed env var is set
+capabilities: []          # optional; subset of [badge, notify]
+```
+
+If `describe` fails, times out, or speaks a schema newer than `kelpie: 1`, kelpie skips that host with a warning and continues with the rest.
+
+### `caller`
+
+Called by `kelpie watch`, `kelpie unwatch`, `kelpie remind` and `kelpie reminders` when `--workspace` is omitted, in the caller's environment and working directory. Prints the current workspace's raw ID on a single line and exits 0 if this shell belongs to the host; prints nothing or exits non-zero otherwise.
+
+### `workspaces`
+
+Called at startup, on a `kelpie watch` miss, and every `poll`. Prints a JSON array of live workspaces:
+
+```json
+[
+  {
+    "id": "s1",
+    "path": "/path/to/repo",
+    "branch": "fix-auth",
+    "repos": ["owner/repo"],
+    "agent": true,
+    "state": "idle"
+  }
+]
+```
+
+Only `id` is required. When `path` is set and `branch` or `repos` is omitted, kelpie fills them from `git -C <path>` (cached for 30s). Hosts without a local checkout (such as web or chat agents) can leave `path`, `branch` and `repos` empty; explicit `kelpie watch` bindings still work. When `state` (`idle`, `done`, `working`, `blocked`, `unknown`) transitions to `idle` or `done`, kelpie releases queued deliveries for that workspace. On non-zero exit, kelpie keeps existing watches until the host answers again.
+
+### `state <id>`
+
+Prints one line on stdout: `idle`, `done`, `working`, `blocked` or `unknown`.
+
+### `deliver <id>`
+
+Reads the rendered prompt from stdin. Exit 0 confirms delivery. On non-zero exit, kelpie checks stderr (then stdout) for a JSON error object `{"code": "...", "message": "..."}`:
+
+- `blocked` or `busy`: keeps the batch queued and retries later, notifying if stuck past `delivery.notify.stuck`.
+- `unconfirmed`: does not retry (to avoid duplicate input) and notifies the user instead.
+- Any other code or plain stderr: treated as a retryable delivery failure.
+
+### `badge <id>` and `notify` (optional)
+
+Called only when listed in `describe`'s `capabilities`. Both read JSON from stdin:
+
+- `badge <id>` receives `{"text": "#421 ✓ · ⏰1", "subjects": ["#421 ✓"], "reminders": 1}` (empty text and subjects when clearing).
+- `notify` receives `{"title": "...", "body": "...", "workspace": "s1", "workspace_host": "myhost", "needs_you": false}`. For a notification about another host's workspace, `workspace` keeps that host's prefix. Returning `{"code": "unsupported"}` with a non-zero exit lets another enabled host show the notification instead.
 
 ## Planned: Rex
 

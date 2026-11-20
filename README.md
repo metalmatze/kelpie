@@ -4,7 +4,7 @@
 
 **Stop telling your coding agents what happened while they were idle.** kelpie watches anything you point it at, such as pull requests, CI runs, Linear issues, or a deploy, and types each update into the terminal of the agent that owns the work, so you don't have to do it by hand any longer.
 
-- **Any agent.** Claude Code, Codex, or any other coding agent in [herdr](https://herdr.dev) (the terminal UI or herdr GPUI) or [Orca](docs/hosts.md#orca). kelpie types into the agent's terminal, so the agent needs no plugin or MCP server to receive updates.
+- **Any agent.** Claude Code, Codex, or any other coding agent in [herdr](https://herdr.dev) (the terminal UI or herdr GPUI), [Orca](docs/hosts.md#orca), or an [external host](docs/hosts.md#external-hosts). kelpie delivers through the host, so the agent needs no plugin or MCP server to receive updates.
 - **Anything you want watched.** GitHub and Linear today, Kubernetes next. Each integration is a small provider, and a source is a command plus a jq mapping in YAML, so you can add your own.
 
 A coding agent's turn ends when it pushes. It never sees CI fail ten minutes later, the reviewer ask for changes, or the Linear issue move back to Todo. So you check yourself, copy the failing check or the review into the agent's terminal, and do it again for the next one.
@@ -81,7 +81,7 @@ kelpie never acts on GitHub, Linear or anything else it watches. It does not pus
 kelpie needs:
 
 - macOS or Linux, and Go 1.27 or later to build it.
-- herdr 0.9.5 or later, herdr GPUI, or the Orca app. kelpie reaches only agents that run in one of them.
+- herdr 0.9.5 or later, herdr GPUI, the Orca app, or an [external host](docs/hosts.md#external-hosts) binary. kelpie reaches agents through any enabled host.
 - For GitHub: the GitHub CLI `gh`, logged in (`gh auth status`). kelpie uses the same GitHub access as your agent.
 - For Linear: `curl`, and a Linear personal API key with Read permission, stored with `kelpie auth login linear`.
 - `jq` and `bash`, for the herdr plugin only.
