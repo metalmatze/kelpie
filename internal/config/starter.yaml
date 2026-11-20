@@ -25,6 +25,8 @@ providers:
 #     enabled: true
 #   hc:                # herdr-core, behind the Herdr desktop app
 #     enabled: true
+#   myhost:            # an external host binary (see docs/hosts.md)
+#     command: [kelpie-host-myhost]
 
 # delivery:
 #   debounce: 30s
