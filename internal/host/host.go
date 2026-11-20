@@ -7,10 +7,11 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 )
 
 type Workspace struct {
-	Host   string   // herdr | orca | hc
+	Host   string   // herdr | orca | hc | external host name
 	ID     string   // unique across hosts, see HostOf
 	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
 	Branch string
@@ -21,15 +22,43 @@ type Workspace struct {
 	Agent bool
 }
 
-var prefixed = []string{"orca", "hc"}
+var (
+	regMu    sync.RWMutex
+	prefixed = []string{"orca", "hc"}
 
-// agentHosts set Workspace.Agent. Anywhere else, like hc, whose terminals say
-// nothing about what runs in them, a false Agent is not known rather than a
-// shell, and must not let another host's agent win the branch. A new host is
-// left out until it reports agents, so it keeps ambiguity instead.
-var agentHosts = []string{"herdr", "orca"}
+	// agentHosts set Workspace.Agent. Anywhere else, like hc, whose terminals say
+	// nothing about what runs in them, a false Agent is not known rather than a
+	// shell, and must not let another host's agent win the branch. A new host is
+	// left out until it reports agents, so it keeps ambiguity instead.
+	agentHosts = []string{"herdr", "orca"}
+)
 
-func ReportsAgent(host string) bool { return slices.Contains(agentHosts, host) }
+// Register records a prefixed host name and whether it reports Workspace.Agent.
+// Built-in hosts (herdr, orca, hc) are pre-registered; external hosts call this
+// from config so HostOf and ReportsAgent recognize their workspace IDs.
+func Register(name string, reportsAgent bool) {
+	if name == "" || name == "herdr" {
+		return
+	}
+	regMu.Lock()
+	defer regMu.Unlock()
+	if !slices.Contains(prefixed, name) {
+		prefixed = append(prefixed, name)
+	}
+	if reportsAgent {
+		if !slices.Contains(agentHosts, name) {
+			agentHosts = append(agentHosts, name)
+		}
+	} else {
+		agentHosts = slices.DeleteFunc(agentHosts, func(h string) bool { return h == name })
+	}
+}
+
+func ReportsAgent(host string) bool {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	return slices.Contains(agentHosts, host)
+}
 
 // HostOf names the host a workspace ID belongs to. IDs are unique across
 // hosts so bindings, reminders and delivery queues can key on the ID alone,
@@ -38,8 +67,13 @@ func ReportsAgent(host string) bool { return slices.Contains(agentHosts, host) }
 // bare because watches.json and reminders.json stored them before there was
 // a second host; every other host prefixes its IDs with its name.
 func HostOf(id string) string {
-	if name, _, ok := strings.Cut(id, ":"); ok && slices.Contains(prefixed, name) {
-		return name
+	if name, _, ok := strings.Cut(id, ":"); ok {
+		regMu.RLock()
+		known := slices.Contains(prefixed, name)
+		regMu.RUnlock()
+		if known {
+			return name
+		}
 	}
 	return "herdr"
 }
