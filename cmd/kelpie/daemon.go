@@ -23,6 +23,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/host/hc"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/host/orca"
+	"github.com/metalmatze/kelpie/internal/host/rex"
 	"github.com/metalmatze/kelpie/internal/provider"
 	"github.com/metalmatze/kelpie/internal/route"
 	"github.com/metalmatze/kelpie/internal/schedule"
@@ -220,6 +221,9 @@ func (d *daemon) initHosts(cfg *config.Config, dryRun bool) error {
 	}
 	if c := cfg.Hosts.HC; c.Enabled {
 		d.hosts = append(d.hosts, &hc.HC{Socket: c.Socket, Poll: c.Poll.Duration})
+	}
+	if r := cfg.Hosts.Rex; r.Enabled {
+		d.hosts = append(d.hosts, &rex.Rex{Socket: r.Socket, Poll: r.Poll.Duration})
 	}
 	registerConfigHosts(cfg)
 	for _, eh := range cfg.ExternalHosts {

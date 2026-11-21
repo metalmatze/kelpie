@@ -75,7 +75,7 @@ func TestExternalHostValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, file, err string
 	}{
-		{"typo in built-in host", "hosts: {ocra: {enabled: true}}", "hosts.ocra: command is required (built-in hosts are herdr, orca, hc)"},
+		{"typo in built-in host", "hosts: {ocra: {enabled: true}}", "hosts.ocra: command is required (built-in hosts are herdr, orca, hc, rex)"},
 		{"unknown field", "hosts: {custom: {command: [x], pol: 5s}}", "field pol not found in type config.ExternalHost"},
 		{"colon in name", `hosts: {"bad:name": {command: [x]}}`, "host name must match"},
 		{"uppercase name", `hosts: {Custom: {command: [x]}}`, "host name must match"},

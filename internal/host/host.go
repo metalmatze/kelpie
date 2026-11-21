@@ -11,7 +11,7 @@ import (
 )
 
 type Workspace struct {
-	Host   string   // herdr | orca | hc | external host name
+	Host   string   // herdr | orca | hc | rex | external host name
 	ID     string   // unique across hosts, see HostOf
 	Repos  []string // owner/name of every GitHub remote, so fork PRs match too
 	Branch string
@@ -24,17 +24,19 @@ type Workspace struct {
 
 var (
 	regMu    sync.RWMutex
-	prefixed = []string{"orca", "hc"}
+	prefixed = []string{"orca", "hc", "rex"}
 
 	// agentHosts set Workspace.Agent. Anywhere else, like hc, whose terminals say
 	// nothing about what runs in them, a false Agent is not known rather than a
 	// shell, and must not let another host's agent win the branch. A new host is
-	// left out until it reports agents, so it keeps ambiguity instead.
-	agentHosts = []string{"herdr", "orca"}
+	// left out until it reports agents, so it keeps ambiguity instead. Rex knows
+	// an agent only by the program status it reports, so an agent that reports
+	// none looks like a shell there.
+	agentHosts = []string{"herdr", "orca", "rex"}
 )
 
 // Register records a prefixed host name and whether it reports Workspace.Agent.
-// Built-in hosts (herdr, orca, hc) are pre-registered; external hosts call this
+// Built-in hosts (herdr, orca, hc, rex) are pre-registered; external hosts call this
 // from config so HostOf and ReportsAgent recognize their workspace IDs.
 func Register(name string, reportsAgent bool) {
 	if name == "" || name == "herdr" {
