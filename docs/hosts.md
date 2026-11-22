@@ -133,7 +133,7 @@ hosts:
     enabled: true  # optional; default true when listed
 ```
 
-Host names must match `^[a-z][a-z0-9_-]*$` and cannot shadow built-in hosts (`herdr`, `orca`, `hc`) or herdr workspace IDs (`^w[0-9]+$`). Workspace IDs are prefixed with `<name>:` inside kelpie (`myhost:s1`); the binary always receives and prints raw IDs without the prefix.
+Host names must match `^[a-z][a-z0-9_-]*$` and cannot shadow built-in hosts (`herdr`, `orca`, `hc`) or herdr workspace IDs (`^w[0-9]+$`). Workspace IDs are prefixed with `<name>:` inside kelpie (`myhost:s1`); the binary always receives and prints raw IDs without the prefix. Removing an external host from the config entirely makes kelpie treat its saved IDs as herdr panes, so the next herdr resync deletes those watches.
 
 kelpie appends one subcommand to `command` on each call:
 
