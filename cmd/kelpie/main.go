@@ -171,6 +171,9 @@ func loadExternalHosts(ctx context.Context, g *Globals) func() ([]config.Describ
 	}
 }
 
+// registerConfigHosts registers every configured external host prefix, even if
+// disabled or skipped, so another host's resync never mistakes its saved
+// watches for herdr panes.
 func registerConfigHosts(cfg *config.Config) {
 	for name := range cfg.Hosts.External {
 		host.Register(name, false)

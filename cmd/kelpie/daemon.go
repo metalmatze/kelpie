@@ -133,14 +133,8 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 	if c := cfg.Hosts.HC; c.Enabled {
 		d.hosts = append(d.hosts, &hc.HC{Socket: c.Socket, Poll: c.Poll.Duration})
 	}
-	// Register every configured external host prefix before starting, even if
-	// disabled or skipped, so another host's resync never mistakes its saved
-	// watches for herdr panes.
-	for name := range cfg.Hosts.External {
-		host.Register(name, false)
-	}
+	registerConfigHosts(cfg)
 	for _, eh := range cfg.ExternalHosts {
-		host.Register(eh.Name, eh.ReportsAgent)
 		d.hosts = append(d.hosts, external.New(eh.Name, eh.Command, eh.Poll, eh.Capabilities))
 		slog.Info("host loaded", "host", eh.Name, "command", eh.Command, "reports_agent", eh.ReportsAgent, "capabilities", eh.Capabilities)
 	}
