@@ -79,6 +79,8 @@ func TestExternalHostValidation(t *testing.T) {
 		{"unknown field", "hosts: {custom: {command: [x], pol: 5s}}", "field pol not found in type config.ExternalHost"},
 		{"colon in name", `hosts: {"bad:name": {command: [x]}}`, "host name must match"},
 		{"uppercase name", `hosts: {Custom: {command: [x]}}`, "host name must match"},
+		{"herdr workspace id w1", `hosts: {w1: {command: [x]}}`, "reserved for herdr pane IDs"},
+		{"herdr workspace id w12", `hosts: {w12: {command: [x]}}`, "reserved for herdr pane IDs"},
 		{"negative poll", `hosts: {custom: {command: [x], poll: -1s}}`, "poll must not be negative"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,6 +88,11 @@ func TestExternalHostValidation(t *testing.T) {
 				t.Errorf("got %v, want %q", err, tc.err)
 			}
 		})
+	}
+	for _, name := range []string{"w", "web", "w1-host"} {
+		if err := validateExternalHosts(map[string]ExternalHost{name: {Command: []string{"x"}}}); err != nil {
+			t.Errorf("validateExternalHosts(%q) unexpected error: %v", name, err)
+		}
 	}
 }
 

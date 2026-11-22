@@ -35,13 +35,21 @@ type DescribedHost struct {
 	Poll    time.Duration
 }
 
-var hostNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+var (
+	hostNamePattern   = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+	herdrSpacePattern = regexp.MustCompile(`^w[0-9]+$`)
+)
 
 func validateExternalHosts(hosts map[string]ExternalHost) error {
 	for _, name := range slices.Sorted(maps.Keys(hosts)) {
 		h := hosts[name]
 		if !hostNamePattern.MatchString(name) {
 			return fmt.Errorf("hosts.%s: host name must match %s", name, hostNamePattern)
+		}
+		// herdr pane IDs stay bare (w1:p2), so a host named w<n> would hijack
+		// HostOf for those panes.
+		if herdrSpacePattern.MatchString(name) {
+			return fmt.Errorf("hosts.%s: host name must not match %s (reserved for herdr pane IDs)", name, herdrSpacePattern)
 		}
 		if len(h.Command) == 0 {
 			return fmt.Errorf("hosts.%s: command is required (built-in hosts are herdr, orca, hc)", name)
