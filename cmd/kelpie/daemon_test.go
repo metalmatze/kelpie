@@ -238,3 +238,106 @@ esac`, "exttest"}, time.Hour, nil)
 		t.Fatal("external host resync dropped herdr's binding")
 	}
 }
+
+// When an enabled external host fails describe at daemon startup, the daemon
+// still awaits it so incoming events keep its saved bindings and stay queued
+// instead of being dropped. Stuck notifications fall back to another host
+// without panicking.
+func TestSkippedExternalHostKeepsBindings(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dir := t.TempDir()
+	notified := filepath.Join(dir, "notified.json")
+	healthyScript := filepath.Join(dir, "healthy.sh")
+	script := `#!/bin/sh
+case "$1" in
+  describe)   printf 'kelpie: 1\nname: healthyext\ncapabilities: [notify]\n' ;;
+  workspaces) printf '[]\n' ;;
+  notify)     cat > "` + notified + `.tmp" && mv "` + notified + `.tmp" "` + notified + `" ;;
+  *)          exit 1 ;;
+esac
+`
+	if err := os.WriteFile(healthyScript, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgYAML := "hosts:\n" +
+		"  herdr: {enabled: false}\n" +
+		"  healthyext: {command: ['" + healthyScript + "']}\n" +
+		"  brokenext: {command: [sh, -c, 'echo down >&2; exit 1']}\n" +
+		"  disabledext: {enabled: false, command: ['true']}\n"
+	cfg, err := config.Parse(ctx, []byte(cfgYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skipped) != 1 || !strings.Contains(cfg.Skipped[0], "host brokenext skipped") {
+		t.Fatalf("skipped = %v, want brokenext", cfg.Skipped)
+	}
+
+	st := state.NewMemory()
+	d := &daemon{
+		ctx:      ctx,
+		binder:   bind.New(st, false),
+		runners:  map[string]*runner{},
+		lastSeen: map[string]string{},
+		badges:   map[core.Subject]string{},
+		shown:    map[string]string{},
+	}
+	if err := d.initHosts(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if !d.binder.Unlisted("brokenext:s1") {
+		t.Fatal("skipped enabled external host is not awaited")
+	}
+	if d.binder.Unlisted("disabledext:s1") {
+		t.Fatal("disabled external host should not be awaited")
+	}
+
+	d.binder.Bind(core.Binding{Subject: "github:acme/api#10", Workspace: "brokenext:s1", Via: "explicit"})
+	d.binder.Bind(core.Binding{Subject: "github:acme/api#11", Workspace: "disabledext:s1", Via: "explicit"})
+	// Another host resyncing must leave both registered external hosts alone.
+	d.binder.SetWorkspaces("herdr", nil)
+	if _, ok := d.binder.Binding("github:acme/api#10", "brokenext:s1"); !ok {
+		t.Fatal("herdr resync dropped skipped external host binding")
+	}
+
+	d.router = route.New(ctx, config.Delivery{
+		Debounce:       config.Duration{Duration: 10 * time.Millisecond},
+		UrgentDebounce: config.Duration{Duration: 10 * time.Millisecond},
+		Retry:          config.Duration{Duration: 25 * time.Millisecond},
+		Notify:         config.Notify{Stuck: config.Duration{Duration: 20 * time.Millisecond}},
+		Prefix:         "[kelpie]",
+	}, route.NewRules(config.Rules{}, nil), d.binder, d.hosts)
+
+	d.router.Route(core.Event{
+		Subject: "github:acme/api#10",
+		Kind:    "checks.failed",
+		Summary: "1 failed: test",
+		Urgent:  true,
+	})
+	// Wait until the stuck notification reaches healthyext, proving the batch
+	// retried while unlisted and fallback notification handled the nil host.
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if body, err := os.ReadFile(notified); err == nil && len(body) > 0 {
+			if !strings.Contains(string(body), "brokenext:s1") {
+				t.Fatalf("unexpected fallback notification: %s", string(body))
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stuck notification did not fall back to healthyext")
+		}
+	}
+	if _, ok := d.binder.Binding("github:acme/api#10", "brokenext:s1"); !ok {
+		t.Fatal("event dropped binding of skipped enabled external host")
+	}
+	if got := d.router.Queued()["brokenext:s1"]; got != 1 {
+		t.Fatalf("queued for brokenext:s1 = %d, want 1", got)
+	}
+
+	// A disabled external host is not awaited, so an event ends its binding.
+	d.router.Route(core.Event{Subject: "github:acme/api#11", Kind: "checks.failed", Summary: "1 failed", Urgent: true})
+	if _, ok := d.binder.Binding("github:acme/api#11", "disabledext:s1"); ok {
+		t.Fatal("disabled external host kept its binding after an event")
+	}
+}

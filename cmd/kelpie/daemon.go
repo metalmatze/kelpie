@@ -123,30 +123,17 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	d := &daemon{ctx: ctx, runners: map[string]*runner{}, lastSeen: map[string]string{}, badges: map[core.Subject]string{}, shown: map[string]string{}}
-	if cfg.Hosts.Herdr.Enabled {
-		d.hosts = append(d.hosts, &herdr.Herdr{Bin: cfg.Hosts.Herdr.Bin, Socket: cfg.Hosts.Herdr.Socket, Poll: cfg.Hosts.Herdr.Poll.Duration})
+	d := &daemon{
+		ctx:      ctx,
+		binder:   bind.New(st, cfg.Binders.Branch),
+		runners:  map[string]*runner{},
+		lastSeen: map[string]string{},
+		badges:   map[core.Subject]string{},
+		shown:    map[string]string{},
 	}
-	if o := cfg.Hosts.Orca; o.Enabled {
-		d.hosts = append(d.hosts, &orca.Orca{Bin: o.Bin, Poll: o.Poll.Duration, Comment: o.Comment, CommentsFile: filepath.Join(control.StateDir(), "orca-comments.json")})
+	if err := d.initHosts(cfg, c.DryRun); err != nil {
+		return err
 	}
-	if c := cfg.Hosts.HC; c.Enabled {
-		d.hosts = append(d.hosts, &hc.HC{Socket: c.Socket, Poll: c.Poll.Duration})
-	}
-	registerConfigHosts(cfg)
-	for _, eh := range cfg.ExternalHosts {
-		d.hosts = append(d.hosts, external.New(eh.Name, eh.Command, eh.Poll, eh.Capabilities))
-		slog.Info("host loaded", "host", eh.Name, "command", eh.Command, "reports_agent", eh.ReportsAgent, "capabilities", eh.Capabilities)
-	}
-	if len(d.hosts) == 0 {
-		return errors.New("no host enabled")
-	}
-	if c.DryRun {
-		for i, h := range d.hosts {
-			d.hosts[i] = printHost{h}
-		}
-	}
-	d.binder = bind.New(st, cfg.Binders.Branch)
 	for _, p := range cfg.Provided {
 		if !cfg.Binders.ByBranch(p.Name) {
 			continue
@@ -158,9 +145,6 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 			}
 			d.binder.Branches = append(d.binder.Branches, bp)
 		}
-	}
-	for _, h := range d.hosts {
-		d.binder.Await(h.Name())
 	}
 	d.router = route.New(ctx, cfg.Delivery, route.NewRules(cfg.Rules, me(ctx, cfg.Provided)), d.binder, d.hosts)
 
@@ -225,6 +209,43 @@ func (c *DaemonCmd) Run(ctx context.Context, g *Globals) error {
 		return serveErr
 	}
 	return ctx.Err()
+}
+
+func (d *daemon) initHosts(cfg *config.Config, dryRun bool) error {
+	if cfg.Hosts.Herdr.Enabled {
+		d.hosts = append(d.hosts, &herdr.Herdr{Bin: cfg.Hosts.Herdr.Bin, Socket: cfg.Hosts.Herdr.Socket, Poll: cfg.Hosts.Herdr.Poll.Duration})
+	}
+	if o := cfg.Hosts.Orca; o.Enabled {
+		d.hosts = append(d.hosts, &orca.Orca{Bin: o.Bin, Poll: o.Poll.Duration, Comment: o.Comment, CommentsFile: filepath.Join(control.StateDir(), "orca-comments.json")})
+	}
+	if c := cfg.Hosts.HC; c.Enabled {
+		d.hosts = append(d.hosts, &hc.HC{Socket: c.Socket, Poll: c.Poll.Duration})
+	}
+	registerConfigHosts(cfg)
+	for _, eh := range cfg.ExternalHosts {
+		d.hosts = append(d.hosts, external.New(eh.Name, eh.Command, eh.Poll, eh.Capabilities))
+		slog.Info("host loaded", "host", eh.Name, "command", eh.Command, "reports_agent", eh.ReportsAgent, "capabilities", eh.Capabilities)
+	}
+	if len(d.hosts) == 0 {
+		return errors.New("no host enabled")
+	}
+	if dryRun {
+		for i, h := range d.hosts {
+			d.hosts[i] = printHost{h}
+		}
+	}
+	for _, h := range d.hosts {
+		d.binder.Await(h.Name())
+	}
+	// Await enabled external hosts even when describe skipped them at startup,
+	// so Binder.Resolve keeps their bindings and queues batches instead of
+	// deleting saved watches while the host binary is briefly broken or slow.
+	for name, eh := range cfg.Hosts.External {
+		if eh.IsEnabled() {
+			d.binder.Await(name)
+		}
+	}
+	return nil
 }
 
 func (d *daemon) buildRunners(sources []config.Source, st state.State) error {

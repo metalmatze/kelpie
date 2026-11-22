@@ -150,7 +150,7 @@ caller_env: [MYHOST_ID]   # optional; skip calling `caller` unless at least one 
 capabilities: []          # optional; subset of [badge, notify]
 ```
 
-If `describe` fails, times out, or speaks a schema newer than `kelpie: 1`, kelpie skips that host with a warning and continues with the rest.
+If `describe` fails, times out, or speaks a schema newer than `kelpie: 1`, kelpie skips that host with a warning, keeps its saved watches awaited so incoming events stay queued instead of dropping them, and continues with the rest.
 
 ### `caller`
 
