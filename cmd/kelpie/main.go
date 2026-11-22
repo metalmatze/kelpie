@@ -87,7 +87,12 @@ var callers = []struct {
 // they start: the Orca app launched from a herdr pane gives every Orca
 // terminal that pane's HERDR_PANE_ID. When several hosts' variables are
 // set, TERM_PROGRAM names the innermost terminal.
-func callerWorkspace(ctx context.Context, flag string, extHosts []config.DescribedHost) (string, error) {
+//
+// loadExt supplies configured external hosts on demand. Built-in hosts are
+// checked first so commands that otherwise do not need the config (such as
+// kelpie remind and kelpie unwatch <subject>) still work inside herdr, Orca
+// or hc when the config file is broken.
+func callerWorkspace(ctx context.Context, flag string, loadExt func() ([]config.DescribedHost, error)) (string, error) {
 	if flag != "" {
 		return flag, nil
 	}
@@ -105,6 +110,22 @@ func callerWorkspace(ctx context.Context, flag string, extHosts []config.Describ
 	for _, c := range callers {
 		if id, win := check(c.term, c.detect); win {
 			return id, nil
+		}
+	}
+	// When a built-in host already matched and TERM_PROGRAM is empty, no
+	// external host can win over it, so skip loading the config.
+	if len(found) > 0 && termProgram == "" {
+		return found[0], nil
+	}
+	var extHosts []config.DescribedHost
+	if loadExt != nil {
+		var err error
+		extHosts, err = loadExt()
+		if err != nil {
+			if len(found) > 0 {
+				return found[0], nil
+			}
+			return "", err
 		}
 	}
 	for _, eh := range extHosts {
@@ -127,21 +148,27 @@ func callerWorkspace(ctx context.Context, flag string, extHosts []config.Describ
 	return "", errors.New("not inside a herdr pane, an Orca terminal or chat, or an hc terminal; pass --workspace <id as kelpie status lists it>")
 }
 
-func loadExternalHosts(ctx context.Context, g *Globals) ([]config.DescribedHost, error) {
-	names, hosts, skipped, err := config.LoadExternalHosts(ctx, g.Config)
-	if err != nil {
-		return nil, err
+func fixedExternalHosts(hosts []config.DescribedHost) func() ([]config.DescribedHost, error) {
+	return func() ([]config.DescribedHost, error) { return hosts, nil }
+}
+
+func loadExternalHosts(ctx context.Context, g *Globals) func() ([]config.DescribedHost, error) {
+	return func() ([]config.DescribedHost, error) {
+		names, hosts, skipped, err := config.LoadExternalHosts(ctx, g.Config)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range skipped {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", s)
+		}
+		for _, name := range names {
+			host.Register(name, false)
+		}
+		for _, eh := range hosts {
+			host.Register(eh.Name, eh.ReportsAgent)
+		}
+		return hosts, nil
 	}
-	for _, s := range skipped {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", s)
-	}
-	for _, name := range names {
-		host.Register(name, false)
-	}
-	for _, eh := range hosts {
-		host.Register(eh.Name, eh.ReportsAgent)
-	}
-	return hosts, nil
 }
 
 func registerConfigHosts(cfg *config.Config) {
@@ -313,7 +340,7 @@ func (c *WatchCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 	registerConfigHosts(cfg)
-	workspace, err := callerWorkspace(ctx, c.Workspace, cfg.ExternalHosts)
+	workspace, err := callerWorkspace(ctx, c.Workspace, fixedExternalHosts(cfg.ExternalHosts))
 	if err != nil {
 		return err
 	}
@@ -352,29 +379,23 @@ type UnwatchSubjectCmd struct {
 
 func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
 	var subjects []core.Subject
-	var extHosts []config.DescribedHost
+	loadExt := loadExternalHosts(ctx, g)
 	if len(c.Target) == 1 && core.IsSubject(c.Target[0]) {
 		// As kelpie status lists it: no provider needs to run, so this works
 		// even when the provider that made it is gone.
 		subjects = []core.Subject{core.Subject(c.Target[0])}
-		if c.Workspace == "" {
-			var err error
-			if extHosts, err = loadExternalHosts(ctx, g); err != nil {
-				return err
-			}
-		}
 	} else {
 		cfg, err := loadProviders(ctx, g)
 		if err != nil {
 			return err
 		}
 		registerConfigHosts(cfg)
-		extHosts = cfg.ExternalHosts
+		loadExt = fixedExternalHosts(cfg.ExternalHosts)
 		if subjects, err = resolve(ctx, cfg, c.Target); err != nil {
 			return err
 		}
 	}
-	workspace, err := callerWorkspace(ctx, c.Workspace, extHosts)
+	workspace, err := callerWorkspace(ctx, c.Workspace, loadExt)
 	if err != nil {
 		return err
 	}
@@ -426,25 +447,20 @@ type RemindCmd struct {
 }
 
 func (c *RemindCmd) Run(ctx context.Context, g *Globals) error {
-	var extHosts []config.DescribedHost
 	var subject core.Subject
+	loadExt := loadExternalHosts(ctx, g)
 	if c.Subject != "" {
 		cfg, err := loadProviders(ctx, g)
 		if err != nil {
 			return err
 		}
 		registerConfigHosts(cfg)
-		extHosts = cfg.ExternalHosts
+		loadExt = fixedExternalHosts(cfg.ExternalHosts)
 		if subject, err = subjectOf(ctx, cfg, c.Subject); err != nil {
 			return err
 		}
-	} else if c.Workspace == "" {
-		var err error
-		if extHosts, err = loadExternalHosts(ctx, g); err != nil {
-			return err
-		}
 	}
-	workspace, err := callerWorkspace(ctx, c.Workspace, extHosts)
+	workspace, err := callerWorkspace(ctx, c.Workspace, loadExt)
 	if err != nil {
 		return err
 	}
@@ -502,12 +518,8 @@ func (c *RemindersCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	var extHosts []config.DescribedHost
-	if c.Workspace == "" {
-		extHosts, _ = loadExternalHosts(ctx, g)
-	}
 	// Outside any pane or terminal, list every reminder.
-	workspace, _ := callerWorkspace(ctx, c.Workspace, extHosts)
+	workspace, _ := callerWorkspace(ctx, c.Workspace, loadExternalHosts(ctx, g))
 	n := 0
 	for _, r := range st.Reminders {
 		if c.All || workspace == "" || r.Workspace == workspace {
