@@ -84,6 +84,10 @@ On Linux, the keychain is the Secret Service (`secret-tool`), so a keyring such 
 
 You don't need a watch for an issue assigned to you while its pane is on a branch that names it, such as Linear's `user/eng-123-fix-auth`. The issue's updates go to that pane. If several panes are on the branch, they go to the one running an agent, so a shell pane next to it doesn't matter. With two agents on the branch, neither gets them and kelpie logs a warning; run `kelpie watch linear` in the right one. kelpie cannot tell whether an agent runs in a herdr GPUI terminal, so when one of the panes on the branch is such a terminal, none of them gets the updates either. To turn this off, set `binders.linear: false`.
 
+### Linear inbox
+
+`kelpie watch linear inbox`, or your inbox's URL, follows the Linear inbox of the API key's user, like a GitHub notifications watch. Every 60 seconds kelpie reads the newest 50 notifications that aren't archived. An unread, unsnoozed notification created since the last one seen is news; reading or snoozing one is not. The update names the notification types and issue identifiers, never their text, and points the agent to the inbox. The watch lasts until you unwatch it.
+
 ## Stop a watch
 
 To stop a watch early, run `kelpie unwatch github <target>` or `kelpie unwatch linear <issue>` with the same target, or `kelpie unwatch <subject>` with a subject as `kelpie status` lists it. Other panes that watch the same subject keep their watch.
@@ -140,7 +144,7 @@ kelpie compares each poll with the previous one and turns the differences into e
 - `pr.linked` and `pr.merged`: a PR that references or closes a watched issue was opened or merged.
 - `comment.added`, `reply.added`, `answer.marked` and `answer.unmarked` on a discussion; its `state.closed` ends the watch.
 - `run.failed` and `run.completed` on a GitHub Actions run.
-- `notifications.new`: threads in a watched inbox are new or changed.
+- `notifications.new`: threads in a watched GitHub inbox are new or changed, or a watched Linear inbox has new notifications.
 - `release.new`: a watched repo published one or more full releases.
 - `status.changed`, `assignee.changed`, `comment.added` and `blocker.done` on a Linear issue, and `state.completed` or `state.canceled`, which end the watch. `state.reopened` reports an assigned issue that opens again, and reaches the pane on its branch.
 - `reminder.due`: a reminder is due.

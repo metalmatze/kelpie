@@ -2,11 +2,13 @@ package config_test
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/metalmatze/kelpie/internal/config"
+	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/state"
 )
@@ -74,7 +76,7 @@ func linearConfig(t *testing.T) *config.Config {
 // header line for the short form auth: linear.
 func TestLinearProvider(t *testing.T) {
 	cfg := linearConfig(t)
-	for _, name := range []string{"linear", "linear-issue"} {
+	for _, name := range []string{"linear", "linear-issue", "linear-inbox"} {
 		src, ok := cfg.Source(name)
 		if !ok || cfg.From[name] != "linear" {
 			t.Fatalf("%s: %v, from %q", name, ok, cfg.From[name])
@@ -84,7 +86,7 @@ func TestLinearProvider(t *testing.T) {
 		}
 	}
 	d, _ := cfg.Provider("linear")
-	if !d.Claims("https://linear.app/acme/issue/ENG-1/x") || !d.Claims("ENG-1") || d.Claims("acme/api") {
+	if !d.Claims("https://linear.app/acme/issue/ENG-1/x") || !d.Claims("ENG-1") || !d.Claims("https://linear.app/acme/inbox") || d.Claims("acme/api") || d.Claims("inbox") {
 		t.Error("targets")
 	}
 	plain, err := config.Parse(t.Context(), nil)
@@ -163,5 +165,48 @@ func TestLinearReopen(t *testing.T) {
 				t.Errorf("reopening fired %v, want %v", kinds, tc.want)
 			}
 		})
+	}
+}
+
+// The fixtures are synthetic responses of the inbox query: a baseline with
+// one unread and one read notification (1), three new unread ones on two
+// issues (2), all but one read (3), and a new project update next to a new
+// but snoozed comment (4). Only unread, unsnoozed notifications created
+// after the newest one seen are news.
+func TestLinearInboxSource(t *testing.T) {
+	src, _ := linearConfig(t).Source("linear-inbox")
+	m, err := diff.NewMapper(src.Map, src.Slurp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := diff.New(src.Name, src.Transitions, state.NewMemory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &core.Observation{Subject: "linear-inbox:me", Fields: map[string]any{"who": "me"}}
+	for _, step := range []struct{ file, summary string }{
+		{file: "1.json"},
+		{"2.json", "3 new (1 issue assigned to you, 1 issue mention, 1 issue new comment): ENG-3, ENG-4"},
+		{file: "3.json"},
+		{"4.json", "1 new (1 project update created)"},
+	} {
+		raw, err := os.ReadFile("../../testdata/linear-inbox/" + step.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obs, err := m.Map(raw, parent)
+		if err != nil {
+			t.Fatalf("%s: %v", step.file, err)
+		}
+		evs := d.Observe(obs)
+		if step.summary == "" {
+			if len(evs) > 0 {
+				t.Fatalf("%s: unexpected events %+v", step.file, evs)
+			}
+			continue
+		}
+		if len(evs) != 1 || evs[0].Kind != "notifications.new" || evs[0].Subject != "linear-inbox:me" || evs[0].Summary != step.summary {
+			t.Fatalf("%s: got %+v, want summary %q", step.file, evs, step.summary)
+		}
 	}
 }

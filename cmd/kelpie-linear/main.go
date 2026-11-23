@@ -54,7 +54,7 @@ func (DescribeCmd) Run() error {
 }
 
 type SubjectCmd struct {
-	Targets []string `arg:"" help:"Issue ID like ENG-123, its subject linear:ENG-123, or its URL."`
+	Targets []string `arg:"" help:"Issue ID like ENG-123, its subject linear:ENG-123, its URL, or inbox."`
 }
 
 func (c *SubjectCmd) Run() error {
@@ -74,6 +74,11 @@ var (
 	// describe.yaml match the same inputs.
 	issueURL = regexp.MustCompile(`^https?://linear\.app/[^/]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)(?:[/?#].*)?$`)
 	issueID  = regexp.MustCompile(`^(?i:linear:)?([A-Za-z][A-Za-z0-9]*-\d+)$`)
+	// The inbox is the key's own: linear.app/<workspace>/inbox, its subject
+	// linear-inbox:me, or the word inbox, which only kelpie watch linear
+	// passes on, since a bare word is not a target of its own.
+	inboxURL = regexp.MustCompile(`^https?://linear\.app/[^/]+/inbox(?:[/?#].*)?$`)
+	inboxID  = regexp.MustCompile(`^(?i:inbox|linear-inbox:me)$`)
 )
 
 // parse accepts an issue identifier (ENG-123), its subject (linear:ENG-123)
@@ -81,12 +86,15 @@ var (
 // map key for kelpie's watches and snapshots, so it is upper case.
 func parse(s string) (string, error) {
 	s = strings.TrimSpace(s)
+	if inboxURL.MatchString(s) || inboxID.MatchString(s) {
+		return "linear-inbox:me", nil
+	}
 	m := issueURL.FindStringSubmatch(s)
 	if m == nil {
 		m = issueID.FindStringSubmatch(s)
 	}
 	if m == nil {
-		return "", fmt.Errorf("cannot parse %q: want a Linear issue ID like ENG-123 or its URL", s)
+		return "", fmt.Errorf("cannot parse %q: want a Linear issue ID like ENG-123, its URL, or inbox", s)
 	}
 	return "linear:" + strings.ToUpper(m[1]), nil
 }
