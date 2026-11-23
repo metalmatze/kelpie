@@ -48,9 +48,11 @@ kelpie watch github https://github.com/org/api/releases
 
 - **Issues:** status and assignee changes, comments, and blocking issues done.
 - **Your assigned issues:** reach the agent whose branch names them, such as `user/eng-123-fix-auth`, without a watch.
+- **Your inbox:** new notifications, such as mentions, assignments and comments.
 
 ```sh
 kelpie watch linear ENG-123
+kelpie watch linear inbox
 ```
 
 ### Reminders

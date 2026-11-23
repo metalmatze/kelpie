@@ -24,6 +24,11 @@ func TestParse(t *testing.T) {
 		"123":                                                     "",
 		"acme/api#7":                                              "",
 		"":                                                        "",
+		"inbox":                                                   "linear-inbox:me",
+		"linear-inbox:me":                                         "linear-inbox:me",
+		"https://linear.app/acme/inbox":                           "linear-inbox:me",
+		"https://linear.app/acme/inbox/ENG-1":                     "linear-inbox:me",
+		"https://linear.app/inbox":                                "",
 	} {
 		got, err := parse(in)
 		if got != want || (err == nil) != (want != "") {
@@ -48,6 +53,7 @@ func TestTargetsMatchParse(t *testing.T) {
 		"https://linear.app/acme/issue/ENG-123#comment-1a2b",
 		"https://linear.app/acme/project/kelpie-1a2b3c", "https://linear.app/acme/issue/ENG-123x",
 		"ENG", "123", "acme/api#7", "https://github.com/acme/api/pull/1",
+		"linear-inbox:me", "https://linear.app/acme/inbox",
 	} {
 		claimed := false
 		for _, p := range d.Targets {

@@ -23,6 +23,8 @@ branches:
 # or the subject itself. Kept in step with parse in main.go.
 targets:
   - '^https?://linear\.app/[^/]+/issue/[A-Za-z][A-Za-z0-9]*-\d+(?:[/?#].*)?$'
+  - '^https?://linear\.app/[^/]+/inbox(?:[/?#].*)?$'
+  - '^(?i:linear-inbox:me)$'
   - '^(?i:linear:)?[A-Za-z][A-Za-z0-9]*-\d+$'
 
 defs: |
@@ -219,3 +221,56 @@ sources:
       "\(.id) \(.status)"
       + ([.blockers[] | select(.done | not)] | if length > 0 then " ⛔\(length)" else "" end)
     transitions: *linear_transitions
+
+  # Your Linear inbox: kelpie watch linear inbox. One query every 60 s for
+  # the newest 50 notifications, unarchived only, as Linear's API returns by
+  # default; about 60 of the 2,500 requests an hour a key may make. Like
+  # github-inbox, news is an unread notification created after the newest
+  # one seen: reading or snoozing one is not news, and latest keeps the
+  # newest createdAt seen once everything is read. Notifications that you
+  # cause never reach your own inbox, so there is no actor to ignore. The
+  # summary has counts, types and issue identifiers; comment text and
+  # titles are other people's text and stay out of the prompt.
+  - name: linear-inbox
+    adapter: cli
+    every: 60s
+    auth: linear
+    for_each: { subjects: "linear-inbox:{who}" }
+    run:
+      - curl
+      - -sSK
+      - "-"
+      - --fail-with-body
+      - --max-time
+      - "60"
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - >-
+        {"query": "{ notifications(first: 50) { nodes { type createdAt readAt snoozedUntilAt
+        ... on IssueNotification { issue { identifier } } } } }"}
+      - https://api.linear.app/graphql
+    map: |
+      [.data.notifications.nodes[] | select(.readAt == null and .snoozedUntilAt == null)] as $unread | {
+        fields: {
+          latest: ($unread | map(.createdAt) | max),
+          notifications: ($unread | map({
+            created_at: .createdAt,
+            type: (.type | gsub("(?<c>[A-Z])"; " \(.c | ascii_downcase)")),
+            ref: (.issue.identifier // "")
+          }))
+        },
+        url: "https://linear.app/inbox",
+        fetch: ["https://linear.app/inbox"]
+      }
+    badge: '"Linear 🔔\(.notifications | length)"'
+    transitions:
+      - field: latest
+        increased: true
+        ignore: [null]    # everything read: keep the newest createdAt seen
+        kind: notifications.new
+        summary: |
+          [.notifications[] | select(.created_at > ($old.latest // ""))] as $new
+          | ($new | map(.ref | select(. != "")) | unique) as $refs
+          | "\($new | length) new (\($new | group_by(.type) | map("\(length) \(.[0].type)") | join(", ")))"
+            + (if ($refs | length) > 0 then ": \($refs[:5] | join(", "))\(if ($refs | length) > 5 then ", ..." else "" end)" else "" end)
