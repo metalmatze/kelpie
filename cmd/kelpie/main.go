@@ -20,6 +20,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/diff"
 	"github.com/metalmatze/kelpie/internal/host"
+	"github.com/metalmatze/kelpie/internal/host/external"
 	"github.com/metalmatze/kelpie/internal/host/hc"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/host/orca"
@@ -86,23 +87,100 @@ var callers = []struct {
 // they start: the Orca app launched from a herdr pane gives every Orca
 // terminal that pane's HERDR_PANE_ID. When several hosts' variables are
 // set, TERM_PROGRAM names the innermost terminal.
-func callerWorkspace(flag string) (string, error) {
+//
+// loadExt supplies configured external hosts on demand. Built-in hosts are
+// checked first so commands that otherwise do not need the config (such as
+// kelpie remind and kelpie unwatch <subject>) still work inside herdr, Orca
+// or hc when the config file is broken.
+func callerWorkspace(ctx context.Context, flag string, loadExt func() ([]config.DescribedHost, error)) (string, error) {
 	if flag != "" {
 		return flag, nil
 	}
+	termProgram := os.Getenv("TERM_PROGRAM")
 	var found []string
-	for _, c := range callers {
-		if id, ok := c.detect(); ok {
-			if c.term != "" && strings.EqualFold(os.Getenv("TERM_PROGRAM"), c.term) {
-				return id, nil
+	check := func(term string, detect func() (string, bool)) (string, bool) {
+		if id, ok := detect(); ok {
+			if term != "" && strings.EqualFold(termProgram, term) {
+				return id, true
 			}
 			found = append(found, id)
+		}
+		return "", false
+	}
+	for _, c := range callers {
+		if id, win := check(c.term, c.detect); win {
+			return id, nil
+		}
+	}
+	// When a built-in host already matched and TERM_PROGRAM is empty, no
+	// external host can win over it, so skip loading the config.
+	if len(found) > 0 && termProgram == "" {
+		return found[0], nil
+	}
+	var extHosts []config.DescribedHost
+	if loadExt != nil {
+		var err error
+		extHosts, err = loadExt()
+		if err != nil {
+			if len(found) > 0 {
+				return found[0], nil
+			}
+			return "", err
+		}
+	}
+	for _, eh := range extHosts {
+		if id, win := check(eh.TermProgram, func() (string, bool) {
+			return external.Caller(ctx, eh.Command, eh.Name, eh.CallerEnv)
+		}); win {
+			return id, nil
 		}
 	}
 	if len(found) > 0 {
 		return found[0], nil
 	}
+	if len(extHosts) > 0 {
+		names := make([]string, len(extHosts))
+		for i, eh := range extHosts {
+			names[i] = eh.Name
+		}
+		return "", fmt.Errorf("not inside a herdr pane, an Orca terminal or chat, an hc terminal, or a configured external host (%s); pass --workspace <id as kelpie status lists it>", strings.Join(names, ", "))
+	}
 	return "", errors.New("not inside a herdr pane, an Orca terminal or chat, or an hc terminal; pass --workspace <id as kelpie status lists it>")
+}
+
+func fixedExternalHosts(hosts []config.DescribedHost) func() ([]config.DescribedHost, error) {
+	return func() ([]config.DescribedHost, error) { return hosts, nil }
+}
+
+func loadExternalHosts(ctx context.Context, g *Globals) func() ([]config.DescribedHost, error) {
+	return func() ([]config.DescribedHost, error) {
+		names, hosts, skipped, err := config.LoadExternalHosts(ctx, g.Config)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range skipped {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", s)
+		}
+		for _, name := range names {
+			host.Register(name, false)
+		}
+		for _, eh := range hosts {
+			host.Register(eh.Name, eh.ReportsAgent)
+		}
+		return hosts, nil
+	}
+}
+
+// registerConfigHosts registers every configured external host prefix, even if
+// disabled or skipped, so another host's resync never mistakes its saved
+// watches for herdr panes.
+func registerConfigHosts(cfg *config.Config) {
+	for name := range cfg.Hosts.External {
+		host.Register(name, false)
+	}
+	for _, eh := range cfg.ExternalHosts {
+		host.Register(eh.Name, eh.ReportsAgent)
+	}
 }
 
 type InitCmd struct{}
@@ -260,11 +338,12 @@ type WatchCmd struct {
 }
 
 func (c *WatchCmd) Run(ctx context.Context, g *Globals) error {
-	workspace, err := callerWorkspace(c.Workspace)
+	cfg, err := loadProviders(ctx, g)
 	if err != nil {
 		return err
 	}
-	cfg, err := loadProviders(ctx, g)
+	registerConfigHosts(cfg)
+	workspace, err := callerWorkspace(ctx, c.Workspace, fixedExternalHosts(cfg.ExternalHosts))
 	if err != nil {
 		return err
 	}
@@ -303,6 +382,7 @@ type UnwatchSubjectCmd struct {
 
 func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
 	var subjects []core.Subject
+	loadExt := loadExternalHosts(ctx, g)
 	if len(c.Target) == 1 && core.IsSubject(c.Target[0]) {
 		// As kelpie status lists it: no provider needs to run, so this works
 		// even when the provider that made it is gone.
@@ -312,12 +392,18 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
 		if err != nil {
 			return err
 		}
+		registerConfigHosts(cfg)
+		loadExt = fixedExternalHosts(cfg.ExternalHosts)
 		if subjects, err = resolve(ctx, cfg, c.Target); err != nil {
 			return err
 		}
 	}
+	workspace, err := callerWorkspace(ctx, c.Workspace, loadExt)
+	if err != nil {
+		return err
+	}
 	for _, s := range subjects {
-		if err := unwatch(ctx, s, c.Workspace); err != nil {
+		if err := unwatch(ctx, s, workspace); err != nil {
 			return err
 		}
 	}
@@ -325,10 +411,6 @@ func (c *UnwatchSubjectCmd) Run(ctx context.Context, g *Globals) error {
 }
 
 func unwatch(ctx context.Context, subject core.Subject, workspace string) error {
-	workspace, err := callerWorkspace(workspace)
-	if err != nil {
-		return err
-	}
 	if err := control.NewClient(control.SocketPath()).Unwatch(ctx, subject, workspace); err != nil {
 		return err
 	}
@@ -368,20 +450,24 @@ type RemindCmd struct {
 }
 
 func (c *RemindCmd) Run(ctx context.Context, g *Globals) error {
-	workspace, err := callerWorkspace(c.Workspace)
-	if err != nil {
-		return err
-	}
-	req := control.RemindRequest{Workspace: workspace, Text: strings.Join(c.Text, " "), Cron: c.Cron}
+	var subject core.Subject
+	loadExt := loadExternalHosts(ctx, g)
 	if c.Subject != "" {
 		cfg, err := loadProviders(ctx, g)
 		if err != nil {
 			return err
 		}
-		if req.Subject, err = subjectOf(ctx, cfg, c.Subject); err != nil {
+		registerConfigHosts(cfg)
+		loadExt = fixedExternalHosts(cfg.ExternalHosts)
+		if subject, err = subjectOf(ctx, cfg, c.Subject); err != nil {
 			return err
 		}
 	}
+	workspace, err := callerWorkspace(ctx, c.Workspace, loadExt)
+	if err != nil {
+		return err
+	}
+	req := control.RemindRequest{Workspace: workspace, Text: strings.Join(c.Text, " "), Subject: subject, Cron: c.Cron}
 	switch {
 	case c.In > 0:
 		req.Due = time.Now().Add(c.In)
@@ -430,13 +516,13 @@ type RemindersCmd struct {
 	Workspace string `help:"Pane or terminal whose reminders to list. Default: the one this runs in."`
 }
 
-func (c *RemindersCmd) Run(ctx context.Context) error {
+func (c *RemindersCmd) Run(ctx context.Context, g *Globals) error {
 	st, err := control.NewClient(control.SocketPath()).Status(ctx)
 	if err != nil {
 		return err
 	}
 	// Outside any pane or terminal, list every reminder.
-	workspace, _ := callerWorkspace(c.Workspace)
+	workspace, _ := callerWorkspace(ctx, c.Workspace, loadExternalHosts(ctx, g))
 	n := 0
 	for _, r := range st.Reminders {
 		if c.All || workspace == "" || r.Workspace == workspace {

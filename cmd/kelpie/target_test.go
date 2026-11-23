@@ -12,6 +12,7 @@ import (
 
 	"github.com/metalmatze/kelpie/internal/config"
 	"github.com/metalmatze/kelpie/internal/core"
+	"github.com/metalmatze/kelpie/internal/host/external"
 	"github.com/metalmatze/kelpie/internal/provider"
 )
 
@@ -164,5 +165,101 @@ func TestLinearVerifyWithoutKey(t *testing.T) {
 	_, err := provider.Who(t.Context(), []string{build(t, "kelpie-linear")}, []string{"verify"}, "")
 	if err == nil || !strings.Contains(err.Error(), "kelpie-linear verify: no API key on stdin") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCallerWorkspaceExternalHost(t *testing.T) {
+	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HC_TERMINAL_ID", "")
+	t.Setenv("ORCA_WORKTREE_ID", "")
+	t.Setenv("ORCA_AGENT_SESSION_ID", "")
+	t.Setenv("TERM_PROGRAM", "")
+
+	ext := []config.DescribedHost{{
+		Description: external.Description{
+			Name:        "custom",
+			TermProgram: "customterm",
+			CallerEnv:   []string{"TEST_CUSTOM_WS"},
+		},
+		Command: []string{"sh", "-c", `[ "$1" = caller ] && printf '%s\n' "$TEST_CUSTOM_WS"`, "custom"},
+	}}
+
+	// Outside every host: error names configured external hosts.
+	t.Setenv("TEST_CUSTOM_WS", "")
+	if _, err := callerWorkspace(t.Context(), "", fixedExternalHosts(ext)); err == nil || !strings.Contains(err.Error(), "external host (custom)") {
+		t.Fatalf("outside all hosts: %v", err)
+	}
+
+	// Explicit --workspace always wins.
+	if got, err := callerWorkspace(t.Context(), "custom:manual", fixedExternalHosts(ext)); err != nil || got != "custom:manual" {
+		t.Fatalf("explicit flag: %q %v", got, err)
+	}
+
+	// External host alone matches when its caller env is set.
+	t.Setenv("TEST_CUSTOM_WS", "s7")
+	if got, err := callerWorkspace(t.Context(), "", fixedExternalHosts(ext)); err != nil || got != "custom:s7" {
+		t.Fatalf("external caller: %q %v", got, err)
+	}
+
+	// When nested inside herdr, TERM_PROGRAM picks the innermost host.
+	t.Setenv("HERDR_PANE_ID", "w1:p2")
+	t.Setenv("TERM_PROGRAM", "customterm")
+	if got, err := callerWorkspace(t.Context(), "", fixedExternalHosts(ext)); err != nil || got != "custom:s7" {
+		t.Fatalf("TERM_PROGRAM=customterm: %q %v", got, err)
+	}
+	t.Setenv("TERM_PROGRAM", "herdr")
+	if got, err := callerWorkspace(t.Context(), "", fixedExternalHosts(ext)); err != nil || got != "w1:p2" {
+		t.Fatalf("TERM_PROGRAM=herdr: %q %v", got, err)
+	}
+}
+
+// Commands that do not otherwise read config (kelpie remind, kelpie unwatch
+// <subject>) must keep working in built-in hosts when the config file is broken.
+func TestCallerWorkspaceBrokenConfig(t *testing.T) {
+	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HC_TERMINAL_ID", "")
+	t.Setenv("ORCA_WORKTREE_ID", "")
+	t.Setenv("ORCA_AGENT_SESSION_ID", "")
+	t.Setenv("TERM_PROGRAM", "")
+
+	broken := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(broken, []byte("not: [valid: yaml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &Globals{Config: broken}
+
+	// Matching TERM_PROGRAM or empty TERM_PROGRAM in a built-in host skips config
+	// loading altogether.
+	called := false
+	failIfCalled := func() ([]config.DescribedHost, error) {
+		called = true
+		return nil, os.ErrInvalid
+	}
+	t.Setenv("HERDR_PANE_ID", "w1:p2")
+	t.Setenv("TERM_PROGRAM", "herdr")
+	if got, err := callerWorkspace(t.Context(), "", failIfCalled); err != nil || got != "w1:p2" || called {
+		t.Fatalf("herdr TERM_PROGRAM=herdr: got %q %v called=%v", got, err, called)
+	}
+	t.Setenv("TERM_PROGRAM", "")
+	if got, err := callerWorkspace(t.Context(), "", failIfCalled); err != nil || got != "w1:p2" || called {
+		t.Fatalf("herdr TERM_PROGRAM='': got %q %v called=%v", got, err, called)
+	}
+
+	// Non-matching TERM_PROGRAM (like hc inside ghostty) still falls back to the
+	// built-in host when the config file fails to parse.
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	if got, err := callerWorkspace(t.Context(), "", loadExternalHosts(t.Context(), g)); err != nil || got != "w1:p2" {
+		t.Fatalf("herdr with broken config: got %q %v", got, err)
+	}
+	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HC_TERMINAL_ID", "t7")
+	if got, err := callerWorkspace(t.Context(), "", loadExternalHosts(t.Context(), g)); err != nil || got != "hc:t7" {
+		t.Fatalf("hc with broken config: got %q %v", got, err)
+	}
+
+	// Outside every built-in host, the broken config error surfaces.
+	t.Setenv("HC_TERMINAL_ID", "")
+	if _, err := callerWorkspace(t.Context(), "", loadExternalHosts(t.Context(), g)); err == nil || !strings.Contains(err.Error(), broken) {
+		t.Fatalf("outside built-in hosts with broken config: got %v", err)
 	}
 }

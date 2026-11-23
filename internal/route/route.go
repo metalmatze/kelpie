@@ -245,9 +245,12 @@ func (r *Router) notify(ws host.Workspace, n host.Notification) {
 	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
 	defer cancel()
 	n.Workspace = ws
-	err := r.hosts[ws.Host].Notify(ctx, n)
-	if err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		slog.Warn("notification failed", "host", ws.Host, "workspace", ws.ID, "err", err)
+	err := errors.ErrUnsupported
+	if h := r.hosts[ws.Host]; h != nil {
+		err = h.Notify(ctx, n)
+		if err != nil && !errors.Is(err, errors.ErrUnsupported) {
+			slog.Warn("notification failed", "host", ws.Host, "workspace", ws.ID, "err", err)
+		}
 	}
 	shown := ws.Host
 	for name, h := range r.hosts {

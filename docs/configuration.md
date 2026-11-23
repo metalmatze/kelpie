@@ -68,3 +68,7 @@ At start, kelpie runs `<command> describe`. The provider prints its sources, its
 `kelpie watch <provider> <target>` runs `<command> subject <target>` in your shell, in the current directory, and watches what it prints. `kelpie watch <target>` without a provider name works for a URL or ID that exactly one provider claims, such as a Linear issue URL. If two providers claim it, kelpie asks for the provider name. A subject, as `kelpie status` lists it, needs no provider. kelpie refuses anything else and lists the providers. An org name alone needs its provider, as in `kelpie watch github org`, because any provider's ID could be a bare word.
 
 To stop a provider from binding its issues to panes by branch, set `binders.<provider>: false`, such as `binders.linear: false`. To remove a provider, delete its entry under `providers:`.
+
+## Hosts
+
+Built-in hosts are `hosts.herdr`, `hosts.orca` and `hosts.hc`. Any other key under `hosts:` registers an [external host binary](hosts.md#external-hosts) by its `command:`; like providers, kelpie runs `describe` at start, annotates it in `kelpie config show`, and skips a broken binary with a warning.
