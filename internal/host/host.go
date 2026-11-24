@@ -119,6 +119,14 @@ type Host interface {
 	Notify(ctx context.Context, n Notification) error
 }
 
+// Fallback is an optional Host method for hosts whose workspaces nest, like
+// an Orca agent pane in its worktree. It names the workspace that takes
+// over the watches and reminders of workspace id once id is gone, so they
+// move there instead of ending. A host without it ends them.
+type Fallback interface {
+	Fallback(id string) (string, bool)
+}
+
 type Notification struct {
 	Title, Body string
 	// Workspace is the one the notification is about, so a host can point
