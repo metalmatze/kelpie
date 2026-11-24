@@ -13,6 +13,10 @@ hosts:
     enabled: false
     socket: ""          # default: $HC_SOCKET, else hc's default for $HC_SESSION
     poll: 15s           # lists terminals this often while the event stream is down
+  rex:
+    enabled: false
+    socket: ""          # default: $REX_SERVER if it is unix://, else Rex's default socket
+    poll: 15s           # reconnects this often while Rex is unreachable
 
 delivery:
   debounce: 30s

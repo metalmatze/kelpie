@@ -67,8 +67,15 @@ type Hosts struct {
 	Herdr Herdr `yaml:"herdr"`
 	Orca  Orca  `yaml:"orca"`
 	HC    HC    `yaml:"hc"`
+	Rex   Rex   `yaml:"rex"`
 	// External registers out-of-tree host binaries under hosts:<name>.
 	External map[string]ExternalHost `yaml:",inline"`
+}
+
+type Rex struct {
+	Enabled bool     `yaml:"enabled"`
+	Socket  string   `yaml:"socket"`
+	Poll    Duration `yaml:"poll"`
 }
 
 // HC is herdr-core, the terminal runtime behind the Herdr desktop app. The

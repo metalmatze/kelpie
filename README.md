@@ -4,7 +4,7 @@
 
 **Stop telling your coding agents what happened while they were idle.** kelpie watches anything you point it at, such as pull requests, CI runs, Linear issues, or a deploy, and types each update into the terminal of the agent that owns the work, so you don't have to do it by hand any longer.
 
-- **Any agent.** Claude Code, Codex, or any other coding agent in [herdr](https://herdr.dev) (the terminal UI or herdr GPUI), [Orca](docs/hosts.md#orca), or an [external host](docs/hosts.md#external-hosts). kelpie delivers through the host, so the agent needs no plugin or MCP server to receive updates.
+- **Any agent.** Claude Code, Codex, or any other coding agent in [herdr](https://herdr.dev) (the terminal UI or herdr GPUI), [Orca](docs/hosts.md#orca), [Rex](docs/hosts.md#rex), or an [external host](docs/hosts.md#external-hosts). kelpie delivers through the host, so the agent needs no plugin or MCP server to receive updates.
 - **Anything you want watched.** GitHub and Linear today, Kubernetes next. Each integration is a small provider, and a source is a command plus a jq mapping in YAML, so you can add your own.
 
 A coding agent's turn ends when it pushes. It never sees CI fail ten minutes later, the reviewer ask for changes, or the Linear issue move back to Todo. So you check yourself, copy the failing check or the review into the agent's terminal, and do it again for the next one.
@@ -83,7 +83,7 @@ kelpie never acts on GitHub, Linear or anything else it watches. It does not pus
 kelpie needs:
 
 - macOS or Linux, and Go 1.27 or later to build it.
-- herdr 0.9.5 or later, herdr GPUI, the Orca app, or an [external host](docs/hosts.md#external-hosts) binary. kelpie reaches agents through any enabled host.
+- herdr 0.9.5 or later, herdr GPUI, the Orca app, Rex, or an [external host](docs/hosts.md#external-hosts) binary. kelpie reaches agents through any enabled host.
 - For GitHub: the GitHub CLI `gh`, logged in (`gh auth status`). kelpie uses the same GitHub access as your agent.
 - For Linear: `curl`, and a Linear personal API key with Read permission, stored with `kelpie auth login linear`.
 - `jq` and `bash`, for the herdr plugin only.
@@ -160,14 +160,14 @@ Sources are YAML: a command, a jq mapping, and the transitions that become event
 
 - kelpie polls. Updates arrive within the polling interval: 10 seconds for a workflow run, 30 for a PR, an hour for releases.
 - GitHub support covers github.com, not GitHub Enterprise Server.
-- kelpie reaches only agents in herdr, herdr GPUI and Orca. It does not run on Windows.
+- kelpie reaches only agents in herdr, herdr GPUI, Orca and Rex. It does not run on Windows.
 - After a restart, kelpie takes a fresh baseline. It does not report what changed while it was down.
 - Linear needs a system keychain: Keychain on macOS, a Secret Service such as GNOME Keyring on Linux.
 
 ## Documentation
 
 - [Watches and reminders](docs/watches.md): every watch type, reminders, and the events they report.
-- [Hosts](docs/hosts.md): herdr and its plugin, sidebar badges, herdr GPUI, Orca.
+- [Hosts](docs/hosts.md): herdr and its plugin, sidebar badges, herdr GPUI, Orca, Rex.
 - [Configuration](docs/configuration.md): the config file, sources and providers.
 - [The daemon](docs/daemon.md): polling, state, and running it at login.
 - [DESIGN.md](DESIGN.md): the internals and the plan.

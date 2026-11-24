@@ -52,7 +52,7 @@ func validateExternalHosts(hosts map[string]ExternalHost) error {
 			return fmt.Errorf("hosts.%s: host name must not match %s (reserved for herdr pane IDs)", name, herdrSpacePattern)
 		}
 		if len(h.Command) == 0 {
-			return fmt.Errorf("hosts.%s: command is required (built-in hosts are herdr, orca, hc)", name)
+			return fmt.Errorf("hosts.%s: command is required (built-in hosts are herdr, orca, hc, rex)", name)
 		}
 		if h.Poll.Duration < 0 {
 			return fmt.Errorf("hosts.%s: poll must not be negative", name)

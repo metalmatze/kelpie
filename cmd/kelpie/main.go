@@ -24,6 +24,7 @@ import (
 	"github.com/metalmatze/kelpie/internal/host/hc"
 	"github.com/metalmatze/kelpie/internal/host/herdr"
 	"github.com/metalmatze/kelpie/internal/host/orca"
+	"github.com/metalmatze/kelpie/internal/host/rex"
 	"github.com/metalmatze/kelpie/internal/state"
 )
 
@@ -80,6 +81,7 @@ var callers = []struct {
 	{"", hc.Caller},
 	{"orca", orca.Caller},
 	{"herdr", herdr.Caller},
+	{"rex", rex.Caller},
 }
 
 // callerWorkspace is the workspace given with --workspace, else the pane or
@@ -90,8 +92,8 @@ var callers = []struct {
 //
 // loadExt supplies configured external hosts on demand. Built-in hosts are
 // checked first so commands that otherwise do not need the config (such as
-// kelpie remind and kelpie unwatch <subject>) still work inside herdr, Orca
-// or hc when the config file is broken.
+// kelpie remind and kelpie unwatch <subject>) still work inside herdr, Orca,
+// hc or Rex when the config file is broken.
 func callerWorkspace(ctx context.Context, flag string, loadExt func() ([]config.DescribedHost, error)) (string, error) {
 	if flag != "" {
 		return flag, nil
@@ -143,9 +145,9 @@ func callerWorkspace(ctx context.Context, flag string, loadExt func() ([]config.
 		for i, eh := range extHosts {
 			names[i] = eh.Name
 		}
-		return "", fmt.Errorf("not inside a herdr pane, an Orca terminal or chat, an hc terminal, or a configured external host (%s); pass --workspace <id as kelpie status lists it>", strings.Join(names, ", "))
+		return "", fmt.Errorf("not inside a herdr pane, an Orca terminal or chat, an hc terminal, a Rex pane, or a configured external host (%s); pass --workspace <id as kelpie status lists it>", strings.Join(names, ", "))
 	}
-	return "", errors.New("not inside a herdr pane, an Orca terminal or chat, or an hc terminal; pass --workspace <id as kelpie status lists it>")
+	return "", errors.New("not inside a herdr pane, an Orca terminal or chat, an hc terminal, or a Rex pane; pass --workspace <id as kelpie status lists it>")
 }
 
 func fixedExternalHosts(hosts []config.DescribedHost) func() ([]config.DescribedHost, error) {
