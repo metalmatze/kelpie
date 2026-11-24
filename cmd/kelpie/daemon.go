@@ -634,15 +634,9 @@ func (d *daemon) Unwatch(_ context.Context, req control.WatchRequest) error {
 	if req.Workspace == "" {
 		return errors.New("no workspace given")
 	}
-	id := req.Workspace
-	if _, ok := d.binder.Binding(subject, id); !ok {
-		// A pane that is not watching may sit in a worktree that is: a watch
-		// made before panes were workspaces, or one that fell back.
-		from, _ := d.fallback(id)
-		if _, ok := d.binder.Binding(subject, from); !ok || from == "" {
-			return fmt.Errorf("pane %s is not watching %s", req.Workspace, subject)
-		}
-		id = from
+	id, err := d.unwatchTarget(subject, req.Workspace)
+	if err != nil {
+		return err
 	}
 	d.binder.Unbind(subject, id)
 	d.refreshBadges()
@@ -764,18 +758,57 @@ func (d *daemon) dropCovered(id, to string, listed map[string]host.Workspace) {
 	}
 }
 
+// unwatchTarget is the workspace whose watch of subject an unwatch from
+// workspace id ends: its own. Else, from a pane, its worktree's: a watch
+// made before panes were workspaces, or one that fell back. Else, from a
+// worktree, like a shell tab, the one pane of it that watches the subject,
+// which a watch from the worktree names as the one the updates go to.
+func (d *daemon) unwatchTarget(subject core.Subject, id string) (string, error) {
+	if _, ok := d.binder.Binding(subject, id); ok {
+		return id, nil
+	}
+	if from, ok := d.fallback(id); ok {
+		if _, ok := d.binder.Binding(subject, from); ok {
+			return from, nil
+		}
+	}
+	panes := d.panesWatching(subject, id)
+	switch len(panes) {
+	case 0:
+		return "", fmt.Errorf("pane %s is not watching %s", id, subject)
+	case 1:
+		return panes[0].ID, nil
+	}
+	ids := make([]string, len(panes))
+	for i, p := range panes {
+		ids[i] = p.ID
+	}
+	return "", fmt.Errorf("panes %s watch %s; end one with --workspace", strings.Join(ids, ", "), subject)
+}
+
 // paneWatching is a listed workspace that watches subject and falls back to
 // workspace id: an Orca agent pane of worktree id.
 func (d *daemon) paneWatching(subject core.Subject, id string) (host.Workspace, bool) {
+	panes := d.panesWatching(subject, id)
+	if len(panes) == 0 {
+		return host.Workspace{}, false
+	}
+	return panes[0], true
+}
+
+// panesWatching are the listed workspaces that watch subject and fall back
+// to workspace id.
+func (d *daemon) panesWatching(subject core.Subject, id string) []host.Workspace {
+	var out []host.Workspace
 	for _, bd := range d.binder.Bindings(subject) {
 		if f, ok := d.fallback(bd.Workspace); !ok || f != id {
 			continue
 		}
 		if ws, ok := d.binder.Workspace(bd.Workspace); ok {
-			return ws, true
+			out = append(out, ws)
 		}
 	}
-	return host.Workspace{}, false
+	return out
 }
 
 // fallback is the workspace that takes over from workspace id once it is

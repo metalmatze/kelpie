@@ -517,6 +517,38 @@ func TestUnwatchFromPaneEndsWorktreeBinding(t *testing.T) {
 	}
 }
 
+// Unwatch from the worktree, like one typed in a shell tab, ends the watch
+// of the one pane that holds it, the one watch from there named; with two
+// panes holding it, it names them and ends neither.
+func TestUnwatchFromWorktreeEndsPaneBinding(t *testing.T) {
+	d, ph := paneDaemon(t)
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
+	req := control.WatchRequest{Subject: "rel:acme", Workspace: paneWT}
+	if err := d.Unwatch(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspacesOf(d, "rel:acme"); len(got) != 0 {
+		t.Errorf("watch is on %v; want it ended", got)
+	}
+	if err := d.Unwatch(t.Context(), req); err == nil {
+		t.Error("unwatch with nothing watching succeeded")
+	}
+
+	const paneB = "orca:pane:t2:leaf@r::/src"
+	ph.list = append(ph.list, host.Workspace{Host: "orca", ID: paneB, Path: "/src"})
+	d.Resync("orca", ph.list)
+	for _, p := range []string{paneA, paneB} {
+		d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: p, Via: "explicit", Since: time.Now()})
+	}
+	err := d.Unwatch(t.Context(), req)
+	if err == nil || !strings.Contains(err.Error(), paneA) || !strings.Contains(err.Error(), paneB) {
+		t.Errorf("unwatch with two panes watching = %v; want an error naming both", err)
+	}
+	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{paneA, paneB}) {
+		t.Errorf("watch is on %v; want both panes kept", got)
+	}
+}
+
 // A pane the host does not list, like an Orca terminal without a tab, takes
 // the worktree it is in.
 func TestWorkspaceUnlistedPaneUsesWorktree(t *testing.T) {
