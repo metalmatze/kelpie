@@ -150,17 +150,40 @@ func TestParseID(t *testing.T) {
 	}
 }
 
+// A terminal is its pane only when an agent runs there. A person typing
+// kelpie watch in a shell tab next to the agent gets the worktree, as
+// before panes, so the update reaches that agent instead of waiting for one
+// in the shell.
 func TestCallerPane(t *testing.T) {
-	for _, tc := range []struct{ worktree, key, want string }{
-		{"r::/src", "tab:leaf", "orca:pane:tab:leaf@r::/src"},
-		{"r::/src", "", "orca:r::/src"},
-		{"r::/src", "a@b", "orca:r::/src"},
+	const worktrees = `{"worktreeId":"r::/src","path":"/src","agents":[{"paneKey":"stale:leaf","state":"idle"}]}`
+	const terminals = `{"handle":"h1","worktreeId":"r::/src","tabId":"agent","leafId":"leaf","writable":true,"agentIdentity":"claude"},` +
+		`{"handle":"h2","worktreeId":"r::/src","tabId":"shell","leafId":"leaf","writable":true,"agentIdentity":null},` +
+		`{"handle":"h3","worktreeId":"r::/src","tabId":"stale","leafId":"leaf","writable":true,"agentIdentity":null}`
+	o, _ := fake(t, worktrees, terminals, "")
+	for _, tc := range []struct {
+		name, worktree, key, want string
+		down                      bool
+	}{
+		{name: "an agent's terminal is its pane", worktree: "r::/src", key: "agent:leaf", want: "orca:pane:agent:leaf@r::/src"},
+		{name: "a shell is its worktree", worktree: "r::/src", key: "shell:leaf", want: "orca:r::/src"},
+		{name: "a shell ps still lists an agent in is its worktree", worktree: "r::/src", key: "stale:leaf", want: "orca:r::/src"},
+		{name: "a worktree Orca does not list", worktree: "r::/gone", key: "agent:leaf", want: "orca:r::/gone"},
+		{name: "Orca not answering", worktree: "r::/src", key: "agent:leaf", want: "orca:r::/src", down: true},
+		{name: "no pane key", worktree: "r::/src", key: "", want: "orca:r::/src"},
+		{name: "a pane key with @", worktree: "r::/src", key: "a@b", want: "orca:r::/src"},
 	} {
-		t.Setenv("ORCA_WORKTREE_ID", tc.worktree)
-		t.Setenv("ORCA_PANE_KEY", tc.key)
-		if got, ok := Caller(); !ok || got != tc.want {
-			t.Errorf("Caller with pane key %q = %q, %v; want %q", tc.key, got, ok, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			bin := o.Bin
+			if tc.down {
+				bin = filepath.Join(t.TempDir(), "missing")
+			}
+			t.Setenv("ORCA_CLI_COMMAND", bin)
+			t.Setenv("ORCA_WORKTREE_ID", tc.worktree)
+			t.Setenv("ORCA_PANE_KEY", tc.key)
+			if got, ok := Caller(); !ok || got != tc.want {
+				t.Errorf("Caller with pane key %q = %q, %v; want %q", tc.key, got, ok, tc.want)
+			}
+		})
 	}
 }
 

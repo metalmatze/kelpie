@@ -103,13 +103,14 @@ func (o *Orca) Name() string { return "orca" }
 
 // Caller is the workspace the current process runs in: its agent pane when
 // it can tell, else its worktree. An Orca terminal names its worktree in
-// $ORCA_WORKTREE_ID and its pane in $ORCA_PANE_KEY. An Orca chat has only
+// $ORCA_WORKTREE_ID and its pane in $ORCA_PANE_KEY; the pane is the caller
+// only when an agent runs in it (see agentPane). An Orca chat has only
 // $ORCA_AGENT_SESSION_ID, so the worktree is the one worktree ps lists that
 // session's agent in, which also gives the pane, else the one whose path
 // holds the working directory.
 func Caller() (string, bool) {
 	if id := os.Getenv("ORCA_WORKTREE_ID"); id != "" {
-		if key := os.Getenv("ORCA_PANE_KEY"); validPane(key) {
+		if key := os.Getenv("ORCA_PANE_KEY"); validPane(key) && (&Orca{}).agentPane(id, key) {
 			return paneID(id, key), true
 		}
 		return prefix + id, true
@@ -133,6 +134,29 @@ func Caller() (string, bool) {
 		return prefix + w.WorktreeID, true
 	}
 	return "", false
+}
+
+// agentPane reports whether pane key of worktree id runs an agent that
+// delivery can reach, by the rule delivery itself uses (pickPane). A watch
+// from a shell pane, where a person typed kelpie watch, belongs to the
+// worktree, as before panes: bound to the shell it would wait for an agent
+// there, and take over the worktree's watch of the same subject. When Orca
+// cannot tell, the worktree is the safer owner too.
+func (o *Orca) agentPane(id, key string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rows, err := o.list(ctx)
+	if err != nil {
+		slog.Warn("orca pane: agent unknown; using the worktree", "pane", key, "err", err)
+		return false
+	}
+	for _, w := range rows {
+		if w.WorktreeID == id {
+			_, err := o.target(ctx, w, key)
+			return err == nil
+		}
+	}
+	return false
 }
 
 // callerWorktree also returns the pane key of the agent that matched the
