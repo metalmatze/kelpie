@@ -472,6 +472,36 @@ func TestWatchFromPaneTakesOverWorktree(t *testing.T) {
 	}
 }
 
+// A watch from the worktree, like one typed in a shell tab, leaves a
+// subject its pane watches to the pane, so that one update is delivered
+// once; a subject no pane watches binds the worktree.
+func TestWatchFromWorktreeDefersToPane(t *testing.T) {
+	d, _ := paneDaemon(t)
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: since})
+
+	resp, err := d.Watch(t.Context(), control.WatchRequest{Subject: "rel:acme", Workspace: paneWT})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{paneA}) {
+		t.Errorf("watch is on %v; want the pane alone", got)
+	}
+	if resp.Workspace != paneA || len(resp.Others) != 0 {
+		t.Errorf("response = %s, others %v; want the pane, which gets the updates, and no others", resp.Workspace, resp.Others)
+	}
+	if bd, _ := d.binder.Binding("rel:acme", paneA); !bd.Since.Equal(since) {
+		t.Errorf("binding since %v; want the pane's %v", bd.Since, since)
+	}
+
+	if _, err := d.Watch(t.Context(), control.WatchRequest{Subject: "rel:other", Workspace: paneWT}); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspacesOf(d, "rel:other"); !slices.Equal(got, []string{paneWT}) {
+		t.Errorf("watch is on %v; want the worktree", got)
+	}
+}
+
 func TestUnwatchFromPaneEndsWorktreeBinding(t *testing.T) {
 	d, _ := paneDaemon(t)
 	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneWT, Via: "explicit", Since: time.Now()})

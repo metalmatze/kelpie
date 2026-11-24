@@ -425,6 +425,14 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 	if err != nil {
 		return control.WatchResponse{}, err
 	}
+	// A worktree leaves the subject to a pane of its own that watches it, the
+	// way a pane takes over the worktree's binding below: both bound, the
+	// worktree's best agent, most likely that pane's, would get every update
+	// twice.
+	if pane, ok := d.paneWatching(subject, ws.ID); ok {
+		slog.Info("watch stays with the pane", "subject", subject, "workspace", ws.ID, "pane", pane.ID)
+		ws = pane
+	}
 	resp := control.WatchResponse{Subject: subject, Workspace: ws.ID}
 	// A pane takes over its fallback's binding of the subject: a branch
 	// binding, or a watch made before panes were workspaces, would deliver
@@ -754,6 +762,20 @@ func (d *daemon) dropCovered(id, to string, listed map[string]host.Workspace) {
 			}
 		}
 	}
+}
+
+// paneWatching is a listed workspace that watches subject and falls back to
+// workspace id: an Orca agent pane of worktree id.
+func (d *daemon) paneWatching(subject core.Subject, id string) (host.Workspace, bool) {
+	for _, bd := range d.binder.Bindings(subject) {
+		if f, ok := d.fallback(bd.Workspace); !ok || f != id {
+			continue
+		}
+		if ws, ok := d.binder.Workspace(bd.Workspace); ok {
+			return ws, true
+		}
+	}
+	return host.Workspace{}, false
 }
 
 // fallback is the workspace that takes over from workspace id once it is
