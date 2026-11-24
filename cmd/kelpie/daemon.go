@@ -426,15 +426,31 @@ func (d *daemon) Watch(ctx context.Context, req control.WatchRequest) (control.W
 		return control.WatchResponse{}, err
 	}
 	resp := control.WatchResponse{Subject: subject, Workspace: ws.ID}
+	// A pane takes over its fallback's binding of the subject: a branch
+	// binding, or a watch made before panes were workspaces, would deliver
+	// the same update a second time, to the worktree's best agent.
+	from, _ := d.fallback(ws.ID)
 	for _, bd := range d.binder.Bindings(subject) {
-		if bd.Workspace != ws.ID {
+		if bd.Workspace != ws.ID && bd.Workspace != from {
 			resp.Others = append(resp.Others, bd.Workspace)
 		}
 	}
 	unwatched := len(d.binder.Bindings(subject)) == 0
-	// Watching again from the same workspace keeps the original time.
+	// Watching again from the same workspace keeps the original time; taking
+	// over the worktree's binding keeps its time.
+	since := time.Now()
+	if old, ok := d.binder.Binding(subject, from); ok {
+		since = old.Since
+	}
 	if _, ok := d.binder.Binding(subject, ws.ID); !ok {
-		d.binder.Bind(core.Binding{Subject: subject, Workspace: ws.ID, Via: "explicit", Since: time.Now()})
+		d.binder.Bind(core.Binding{Subject: subject, Workspace: ws.ID, Via: "explicit", Since: since})
+	}
+	// After the Bind: forgetting the last binding of a subject forgets its snapshots.
+	if from != "" && from != ws.ID {
+		if _, ok := d.binder.Binding(subject, from); ok {
+			d.binder.Unbind(subject, from)
+			slog.Info("watch moved to pane", "subject", subject, "from", from, "to", ws.ID)
+		}
 	}
 	// The last watch ending forgot the subject's snapshots, and the loop of
 	// that watch, which startWatches joins instead of replacing, may sleep up
@@ -508,6 +524,14 @@ func (d *daemon) workspace(id string) (host.Workspace, error) {
 	d.refreshWorkspaces() // a pane opened since the last host poll
 	if ws, ok := d.binder.Workspace(id); ok {
 		return ws, nil
+	}
+	// A pane the host does not list, like an Orca terminal without a tab, in
+	// a worktree it does: the watch belongs to the worktree then.
+	if to, ok := d.fallback(id); ok {
+		if ws, ok := d.binder.Workspace(to); ok {
+			slog.Info("workspace not listed; using its fallback", "workspace", id, "fallback", to)
+			return ws, nil
+		}
 	}
 	return host.Workspace{}, fmt.Errorf("workspace %s is not known to any host", id)
 }
@@ -602,12 +626,19 @@ func (d *daemon) Unwatch(_ context.Context, req control.WatchRequest) error {
 	if req.Workspace == "" {
 		return errors.New("no workspace given")
 	}
-	if _, ok := d.binder.Binding(subject, req.Workspace); !ok {
-		return fmt.Errorf("pane %s is not watching %s", req.Workspace, subject)
+	id := req.Workspace
+	if _, ok := d.binder.Binding(subject, id); !ok {
+		// A pane that is not watching may sit in a worktree that is: a watch
+		// made before panes were workspaces, or one that fell back.
+		from, _ := d.fallback(id)
+		if _, ok := d.binder.Binding(subject, from); !ok || from == "" {
+			return fmt.Errorf("pane %s is not watching %s", req.Workspace, subject)
+		}
+		id = from
 	}
-	d.binder.Unbind(subject, req.Workspace)
+	d.binder.Unbind(subject, id)
 	d.refreshBadges()
-	slog.Info("unwatch", "subject", subject, "workspace", req.Workspace)
+	slog.Info("unwatch", "subject", subject, "workspace", id)
 	return nil
 }
 
@@ -631,6 +662,7 @@ func (d *daemon) refreshWorkspaces() {
 // Resync logs the pane list only when it changed: the polling fallback
 // resyncs every few seconds.
 func (d *daemon) Resync(hostName string, list []host.Workspace) {
+	d.fallBack(hostName, list)
 	d.binder.SetWorkspaces(hostName, list)
 	d.sched.Prune(d.alive(hostName))
 	ids := make([]string, len(list))
@@ -664,6 +696,74 @@ func (d *daemon) Resync(hostName string, list []host.Workspace) {
 	}
 	d.badgeMu.Unlock()
 	d.refreshBadges()
+}
+
+// fallBack moves the watches and reminders of the workspaces of hostName that
+// list no longer has to their fallback, when list has that, before
+// SetWorkspaces ends them. It goes by what is bound, not by what the host
+// listed last: a pane can be gone since before the daemon started.
+func (d *daemon) fallBack(hostName string, list []host.Workspace) {
+	listed := map[string]host.Workspace{}
+	for _, ws := range list {
+		listed[ws.ID] = ws
+	}
+	gone := map[string]bool{}
+	note := func(id string) {
+		if _, ok := listed[id]; !ok && host.HostOf(id) == hostName {
+			gone[id] = true
+		}
+	}
+	for _, bd := range d.binder.AllBindings() {
+		note(bd.Workspace)
+	}
+	for _, r := range d.sched.List("") {
+		note(r.Workspace)
+	}
+	for _, id := range slices.Sorted(maps.Keys(gone)) {
+		to, ok := d.fallback(id)
+		if !ok {
+			continue
+		}
+		ws, ok := listed[to]
+		if !ok {
+			continue
+		}
+		d.dropCovered(id, to, listed)
+		d.binder.Move(id, ws)
+		d.sched.Move(id, to)
+		slog.Info("watch falls back", "from", id, "to", to)
+	}
+}
+
+// dropCovered ends the bindings of gone workspace id whose subject a listed
+// sibling with the same fallback already watches: moving them to the
+// fallback would deliver every update twice.
+func (d *daemon) dropCovered(id, to string, listed map[string]host.Workspace) {
+	for _, bd := range d.binder.AllBindings() {
+		if bd.Workspace != id {
+			continue
+		}
+		for _, other := range d.binder.Bindings(bd.Subject) {
+			if _, ok := listed[other.Workspace]; !ok || other.Workspace == id {
+				continue
+			}
+			if f, _ := d.fallback(other.Workspace); f == to {
+				d.binder.Unbind(bd.Subject, id)
+				slog.Info("watch ends with its pane: a sibling watches it", "subject", bd.Subject, "from", id, "sibling", other.Workspace)
+				break
+			}
+		}
+	}
+}
+
+// fallback is the workspace that takes over from workspace id once it is
+// gone, if its host has one.
+func (d *daemon) fallback(id string) (string, bool) {
+	f, ok := d.host(host.HostOf(id)).(host.Fallback)
+	if !ok {
+		return "", false
+	}
+	return f.Fallback(id)
 }
 
 func (d *daemon) Upsert(ws host.Workspace) {
@@ -832,4 +932,12 @@ func (p printHost) Notify(_ context.Context, n host.Notification) error {
 func (p printHost) Deliver(_ context.Context, ws host.Workspace, text string) error {
 	fmt.Printf("--- to %s %s (%s)\n%s\n---\n", ws.Host, ws.ID, ws.Path, text)
 	return nil
+}
+
+func (p printHost) Fallback(id string) (string, bool) {
+	f, ok := p.Host.(host.Fallback)
+	if !ok {
+		return "", false
+	}
+	return f.Fallback(id)
 }

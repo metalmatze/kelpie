@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -339,5 +341,185 @@ esac
 	d.router.Route(core.Event{Subject: "github:acme/api#11", Kind: "checks.failed", Summary: "1 failed", Urgent: true})
 	if _, ok := d.binder.Binding("github:acme/api#11", "disabledext:s1"); ok {
 		t.Fatal("disabled external host kept its binding after an event")
+	}
+}
+
+// paneHost is a host whose workspaces nest, like Orca's agent panes in a
+// worktree: "orca:pane:<key>@<worktree>" falls back to "orca:<worktree>".
+type paneHost struct{ list []host.Workspace }
+
+func (*paneHost) Name() string { return "orca" }
+func (h *paneHost) Workspaces(context.Context) ([]host.Workspace, error) {
+	return h.list, nil
+}
+func (*paneHost) Watch(ctx context.Context, _ host.Events) error { <-ctx.Done(); return ctx.Err() }
+func (*paneHost) State(context.Context, host.Workspace) (host.AgentState, error) {
+	return host.Idle, nil
+}
+func (*paneHost) Deliver(context.Context, host.Workspace, string) error { return nil }
+func (*paneHost) Badge(context.Context, host.Workspace, host.Badge) error {
+	return nil
+}
+func (*paneHost) Notify(context.Context, host.Notification) error { return errors.ErrUnsupported }
+func (*paneHost) Fallback(id string) (string, bool) {
+	rest, ok := strings.CutPrefix(id, "orca:pane:")
+	if !ok {
+		return "", false
+	}
+	_, wt, ok := strings.Cut(rest, "@")
+	return "orca:" + wt, ok
+}
+
+const (
+	paneWT   = "orca:r::/src"
+	paneA    = "orca:pane:t1:leaf@r::/src"
+	paneGone = "orca:pane:t9:leaf@r::/src"
+)
+
+func paneDaemon(t *testing.T) (*daemon, *paneHost) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.json")
+	if err := os.WriteFile(page, []byte(`{"latest": "2026-11-01T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ph := &paneHost{list: []host.Workspace{{Host: "orca", ID: paneWT, Path: "/src", Agent: true}, {Host: "orca", ID: paneA, Path: "/src"}}}
+	st := state.NewMemory()
+	d := &daemon{ctx: ctx, runners: map[string]*runner{}, lastSeen: map[string]string{}, badges: map[core.Subject]string{}, shown: map[string]string{}, binder: bind.New(st, false), hosts: []host.Host{ph}}
+	var err error
+	if d.sched, err = schedule.New(filepath.Join(dir, "reminders.json"), 0, func(core.Reminder, time.Duration) {}); err != nil {
+		t.Fatal(err)
+	}
+	src := config.Source{
+		Name: "releases", Adapter: "cli", Every: config.Duration{Duration: time.Hour},
+		ForEach:     &config.ForEach{Subjects: "rel:{id}"},
+		Run:         []string{"cat", page},
+		Map:         "{fields: .}",
+		Transitions: []config.Transition{{Field: "latest", Increased: true, Kind: "release.new"}},
+	}
+	if err := d.buildRunners([]config.Source{src}, st); err != nil {
+		t.Fatal(err)
+	}
+	d.Resync("orca", ph.list)
+	return d, ph
+}
+
+func workspacesOf(d *daemon, s core.Subject) []string {
+	var out []string
+	for _, bd := range d.binder.Bindings(s) {
+		out = append(out, bd.Workspace)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// A pane that is gone hands its watches and reminders to its worktree; with
+// the worktree gone too they end, and another host's stay.
+func TestResyncPaneFallback(t *testing.T) {
+	d, ph := paneDaemon(t)
+	d.binder.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: since})
+	d.binder.Bind(core.Binding{Subject: "rel:other", Workspace: "w1:p1", Via: "explicit"})
+	if _, err := d.sched.Add(core.Reminder{Workspace: paneA, Text: "look", Due: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	d.Resync("orca", ph.list[:1]) // the pane is gone, the worktree is not
+	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{paneWT}) {
+		t.Fatalf("watch of the gone pane is on %v; want its worktree", got)
+	}
+	if bd, _ := d.binder.Binding("rel:acme", paneWT); !bd.Since.Equal(since) {
+		t.Errorf("moved binding since %v; want %v", bd.Since, since)
+	}
+	if rs := d.sched.List(paneWT); len(rs) != 1 || len(d.sched.List(paneA)) != 0 {
+		t.Errorf("reminders on the worktree = %v; want the pane's", rs)
+	}
+
+	d.Resync("orca", nil) // the worktree is gone too
+	if got := workspacesOf(d, "rel:acme"); len(got) != 0 {
+		t.Errorf("watch is on %v; want it ended", got)
+	}
+	if len(d.sched.List("")) != 0 {
+		t.Errorf("reminders = %v; want them ended", d.sched.List(""))
+	}
+	if got := workspacesOf(d, "rel:other"); !slices.Equal(got, []string{"w1:p1"}) {
+		t.Errorf("other host's watch is on %v; want it untouched", got)
+	}
+}
+
+// A pane that is not in the worktree's watch list yet replaces the
+// worktree's watch of the subject, so that one update is delivered once.
+func TestWatchFromPaneTakesOverWorktree(t *testing.T) {
+	d, _ := paneDaemon(t)
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneWT, Via: "branch", Since: since})
+
+	resp, err := d.Watch(t.Context(), control.WatchRequest{Subject: "rel:acme", Workspace: paneA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{paneA}) {
+		t.Errorf("watch is on %v; want the pane alone", got)
+	}
+	if bd, _ := d.binder.Binding("rel:acme", paneA); !bd.Since.Equal(since) {
+		t.Errorf("binding since %v; want the worktree's %v", bd.Since, since)
+	}
+	if len(resp.Others) != 0 {
+		t.Errorf("others = %v; the replaced worktree is not another watcher", resp.Others)
+	}
+}
+
+func TestUnwatchFromPaneEndsWorktreeBinding(t *testing.T) {
+	d, _ := paneDaemon(t)
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneWT, Via: "explicit", Since: time.Now()})
+	req := control.WatchRequest{Subject: "rel:acme", Workspace: paneA}
+	if err := d.Unwatch(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspacesOf(d, "rel:acme"); len(got) != 0 {
+		t.Errorf("watch is on %v; want it ended", got)
+	}
+	if err := d.Unwatch(t.Context(), req); err == nil {
+		t.Error("unwatch with nothing watching succeeded")
+	}
+}
+
+// A pane the host does not list, like an Orca terminal without a tab, takes
+// the worktree it is in.
+func TestWorkspaceUnlistedPaneUsesWorktree(t *testing.T) {
+	d, _ := paneDaemon(t)
+	ws, err := d.workspace(paneGone)
+	if err != nil || ws.ID != paneWT {
+		t.Errorf("workspace(%s) = %q, %v; want %s", paneGone, ws.ID, err, paneWT)
+	}
+	if _, err := d.workspace("orca:pane:t9:leaf@r::/nowhere"); err == nil {
+		t.Error("a pane of an unlisted worktree resolved")
+	}
+	if _, err := d.workspace("orca:r::/nowhere"); err == nil {
+		t.Error("an unlisted worktree resolved")
+	}
+}
+
+// When a pane closes and a sibling pane of its worktree watches the same
+// subject, the closed pane's watch ends instead of moving: the worktree
+// would deliver every update a second time.
+func TestResyncPaneFallbackSkipsWatchedSibling(t *testing.T) {
+	d, ph := paneDaemon(t)
+	sibling := host.Workspace{Host: "orca", ID: "orca:pane:t2:leaf@r::/src", Path: "/src"}
+	ph.list = append(ph.list, sibling)
+	d.Resync("orca", ph.list)
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
+	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: sibling.ID, Via: "explicit", Since: time.Now()})
+	d.binder.Bind(core.Binding{Subject: "rel:solo", Workspace: paneA, Via: "explicit", Since: time.Now()})
+
+	d.Resync("orca", []host.Workspace{ph.list[0], sibling}) // paneA closed
+	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{sibling.ID}) {
+		t.Errorf("shared watch is on %v; want the sibling alone", got)
+	}
+	if got := workspacesOf(d, "rel:solo"); !slices.Equal(got, []string{paneWT}) {
+		t.Errorf("sole watch is on %v; want the worktree", got)
 	}
 }
