@@ -241,3 +241,33 @@ func TestProviderBranchBinding(t *testing.T) {
 		t.Fatalf("bound by binders.branch without the provider's patterns: %+v", got)
 	}
 }
+
+// An Orca worktree and the panes of its agents share a branch. A pane is no
+// agent workspace, so a branch binding picks the worktree and not nothing.
+func TestBranchBindingIgnoresPanes(t *testing.T) {
+	b := New(state.NewMemory(), true)
+	b.SetWorkspaces("orca", []host.Workspace{
+		{Host: "orca", ID: "orca:r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
+		{Host: "orca", ID: "orca:pane:t1:leaf@r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+		{Host: "orca", ID: "orca:pane:t2:leaf@r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+	})
+	pr := core.Event{Subject: "github:acme/api#421", Bind: map[string]string{"repo": "acme/api", "head_repo": "acme/api", "branch": "fix-auth"}}
+	if got := b.Resolve(pr); len(got) != 1 || got[0].Workspace.ID != "orca:r::/src" {
+		t.Fatalf("Resolve = %+v; want the worktree", got)
+	}
+}
+
+// With no agent detected in the worktree, its panes carry no branch, so the
+// worktree is the one candidate and the event waits there.
+func TestBranchBindingWorktreeWithoutAgent(t *testing.T) {
+	b := New(state.NewMemory(), true)
+	b.SetWorkspaces("orca", []host.Workspace{
+		{Host: "orca", ID: "orca:r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+		{Host: "orca", ID: "orca:pane:t1:leaf@r::/src"},
+		{Host: "orca", ID: "orca:pane:t2:leaf@r::/src"},
+	})
+	pr := core.Event{Subject: "github:acme/api#421", Bind: map[string]string{"repo": "acme/api", "head_repo": "acme/api", "branch": "fix-auth"}}
+	if got := b.Resolve(pr); len(got) != 1 || got[0].Workspace.ID != "orca:r::/src" {
+		t.Fatalf("Resolve = %+v; want the worktree", got)
+	}
+}

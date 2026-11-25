@@ -21,11 +21,43 @@ import (
 	"github.com/metalmatze/kelpie/internal/host"
 )
 
-// A workspace is an Orca worktree, not a terminal: terminal handles are
-// issued per Orca runtime and go stale when Orca restarts, while the
-// worktree ID ("<repoId>::<path>") stays. The agent's terminal is looked up
-// at delivery time.
-const prefix = "orca:"
+// A workspace is an Orca worktree or one agent pane in it, never a
+// terminal: terminal handles are issued per Orca runtime and go stale when
+// Orca restarts, while the worktree ID ("<repoId>::<path>") stays. The
+// agent's terminal is looked up at delivery time.
+//
+// A pane workspace, "orca:pane:<paneKey>@<worktreeId>", is one agent's
+// pane. It lets a watch made by one of several agents in a worktree reach
+// that agent alone, and wait only for its state. The pane key comes
+// first because it never holds an "@", while a worktree path may. A pane
+// key, unlike a handle, is not issued per runtime, but whether it outlives
+// an Orca restart is not known, so a watch whose pane is gone falls back to
+// its worktree (see Fallback).
+const (
+	prefix     = "orca:"
+	panePrefix = prefix + "pane:"
+)
+
+// validPane reports whether key can name a pane workspace.
+func validPane(key string) bool { return key != "" && !strings.Contains(key, "@") }
+
+func paneID(worktreeID, paneKey string) string { return panePrefix + paneKey + "@" + worktreeID }
+
+// parseID splits a workspace ID into its worktree ID and pane key, which is
+// empty for a worktree.
+func parseID(id string) (worktreeID, paneKey string) {
+	if rest, ok := strings.CutPrefix(id, panePrefix); ok {
+		if key, wt, ok := strings.Cut(rest, "@"); ok {
+			return wt, key
+		}
+	}
+	return strings.TrimPrefix(id, prefix), ""
+}
+
+func worktreeOf(id string) string {
+	wt, _ := parseID(id)
+	return wt
+}
 
 type Orca struct {
 	Bin  string        // empty: $ORCA_CLI_COMMAND, else orca (orca-ide on Linux)
@@ -46,8 +78,9 @@ type Orca struct {
 	mu        sync.Mutex
 	repos     map[string]cachedRepos     // by worktree path
 	states    map[string]host.AgentState // by workspace, as of the last poll
-	comments  map[string]replaced        // by workspace, nil until loaded from CommentsFile
-	// seen are the comments this run wrote or checked. The daemon reports
+	comments  map[string]replaced        // by worktree, nil until loaded from CommentsFile
+	badges    map[string]host.Badge      // by workspace: a worktree and its panes share one comment
+	// seen are the worktree comments this run wrote or checked. The daemon reports
 	// every badge again after each resync, for herdr, which forgets them;
 	// Orca keeps comments, and polls resync every 15 s.
 	seen  map[string]bool
@@ -68,12 +101,18 @@ type cachedRepos struct {
 
 func (o *Orca) Name() string { return "orca" }
 
-// Caller is the worktree the current process runs in. An Orca terminal
-// names it in $ORCA_WORKTREE_ID. An Orca chat does not: it only has
+// Caller is the workspace the current process runs in: its agent pane when
+// it can tell, else its worktree. An Orca terminal names its worktree in
+// $ORCA_WORKTREE_ID and its pane in $ORCA_PANE_KEY; the pane is the caller
+// only when an agent runs in it (see agentPane). An Orca chat has only
 // $ORCA_AGENT_SESSION_ID, so the worktree is the one worktree ps lists that
-// session's agent in, else the one whose path holds the working directory.
+// session's agent in, which also gives the pane, else the one whose path
+// holds the working directory.
 func Caller() (string, bool) {
 	if id := os.Getenv("ORCA_WORKTREE_ID"); id != "" {
+		if key := os.Getenv("ORCA_PANE_KEY"); validPane(key) && (&Orca{}).agentPane(id, key) {
+			return paneID(id, key), true
+		}
 		return prefix + id, true
 	}
 	session := os.Getenv("ORCA_AGENT_SESSION_ID")
@@ -88,17 +127,45 @@ func Caller() (string, bool) {
 		return "", false
 	}
 	cwd, _ := os.Getwd()
-	if w, ok := callerWorktree(rows, session, cwd); ok {
+	if w, key, ok := callerWorktree(rows, session, cwd); ok {
+		if validPane(key) {
+			return paneID(w.WorktreeID, key), true
+		}
 		return prefix + w.WorktreeID, true
 	}
 	return "", false
 }
 
-func callerWorktree(rows []worktree, session, dir string) (worktree, bool) {
+// agentPane reports whether pane key of worktree id runs an agent that
+// delivery can reach, by the rule delivery itself uses (pickPane). A watch
+// from a shell pane, where a person typed kelpie watch, belongs to the
+// worktree, as before panes: bound to the shell it would wait for an agent
+// there, and take over the worktree's watch of the same subject. When Orca
+// cannot tell, the worktree is the safer owner too.
+func (o *Orca) agentPane(id, key string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rows, err := o.list(ctx)
+	if err != nil {
+		slog.Warn("orca pane: agent unknown; using the worktree", "pane", key, "err", err)
+		return false
+	}
+	for _, w := range rows {
+		if w.WorktreeID == id {
+			_, err := o.target(ctx, w, key)
+			return err == nil
+		}
+	}
+	return false
+}
+
+// callerWorktree also returns the pane key of the agent that matched the
+// session, empty when only the directory matched.
+func callerWorktree(rows []worktree, session, dir string) (worktree, string, bool) {
 	for _, w := range rows {
 		for _, a := range w.Agents {
 			if s, ok := a.session(); ok && s == session {
-				return w, true
+				return w, a.PaneKey, true
 			}
 		}
 	}
@@ -109,7 +176,7 @@ func callerWorktree(rows []worktree, session, dir string) (worktree, bool) {
 			best = w
 		}
 	}
-	return best, best.Path != ""
+	return best, "", best.Path != ""
 }
 
 type worktree struct {
@@ -175,6 +242,24 @@ func (a agent) state() host.AgentState {
 	return host.Unknown
 }
 
+// paneState is the state of one agent, Unknown when no hook reports it.
+func (w worktree) paneState(key string) host.AgentState {
+	for _, a := range w.Agents {
+		if a.PaneKey == key {
+			return a.state()
+		}
+	}
+	return host.Unknown
+}
+
+// stateOf is the state of a pane, or of the whole worktree for an empty key.
+func (w worktree) stateOf(key string) host.AgentState {
+	if key == "" {
+		return w.state()
+	}
+	return w.paneState(key)
+}
+
 // state of a worktree: one blocked agent is enough to hold a delivery back,
 // as the prompt might land in its question.
 func (w worktree) state() host.AgentState {
@@ -208,7 +293,11 @@ func (o *Orca) list(ctx context.Context) ([]worktree, error) {
 }
 
 // Workspaces are all worktrees, not only those running an agent, so a
-// watch survives the agent restarting. A runtime that is not ready fails
+// watch survives the agent restarting, and every pane of them, shell or
+// agent, so a watch can belong to one agent of several in a worktree, and
+// lives as long as its pane. A pane workspace is no agent workspace: an
+// event that binds by branch must pick the worktree, which a pane would
+// otherwise share the branch with. A runtime that is not ready fails
 // instead of listing nothing, which would end every Orca watch.
 func (o *Orca) Workspaces(ctx context.Context) ([]host.Workspace, error) {
 	list, _, err := o.workspaces(ctx)
@@ -233,23 +322,54 @@ func (o *Orca) workspaces(ctx context.Context) ([]host.Workspace, []worktree, er
 	if err != nil {
 		return nil, nil, err
 	}
-	named, err := o.agentTerminals(ctx)
+	terms, err := o.terminals(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	out := make([]host.Workspace, len(rows))
-	for i, w := range rows {
-		out[i] = o.workspace(ctx, w, named[w.WorktreeID])
+	var out []host.Workspace
+	for _, w := range rows {
+		named := slices.ContainsFunc(terms[w.WorktreeID], func(t terminal) bool { return t.AgentIdentity != nil })
+		ws := o.workspace(ctx, w, named)
+		out = append(out, ws)
+		for _, k := range panes(w, terms[w.WorktreeID]) {
+			// A pane has no branch or repos of its own: only branch
+			// binding reads them, and it must see the worktree alone, or a
+			// worktree with no agent detected and a shell pane would be
+			// two ambiguous candidates and drop the event.
+			pane := ws
+			pane.ID, pane.Agent, pane.Branch, pane.Repos = paneID(w.WorktreeID, k), false, "", nil
+			out = append(out, pane)
+		}
 	}
 	return out, rows, nil
 }
 
-// agentTerminals are the worktrees with a live terminal Orca names an
-// agent in. worktree ps lists only agents that report through Orca's
-// hooks, and chats; an agent Orca knows by its process or title alone,
-// which pick still delivers to, is missing there, and counting it as no
-// agent would let another host's agent on the branch take the binding.
-func (o *Orca) agentTerminals(ctx context.Context) (map[string]bool, error) {
+// panes are the pane keys of a worktree: every live terminal, shell or
+// agent, and every chat. Like a herdr pane, a pane is a workspace whether
+// or not an agent runs in it, so a watch lives as long as its pane and
+// survives the agent restarting there; delivery waits for an agent.
+func panes(w worktree, terms []terminal) []string {
+	var keys []string
+	for _, a := range w.Agents {
+		if _, ok := a.session(); ok {
+			keys = append(keys, a.PaneKey)
+		}
+	}
+	for _, t := range terms {
+		keys = append(keys, t.paneKey())
+	}
+	keys = slices.DeleteFunc(keys, func(k string) bool { return !validPane(k) })
+	slices.Sort(keys)
+	return slices.Compact(keys)
+}
+
+// terminals are the live terminals by worktree. Orphaned ones, left from
+// before Orca restarted, have no pane. worktree ps lists only agents that
+// report through Orca's hooks, and chats; an agent Orca knows by its process
+// or title alone, which pick still delivers to, is only visible here, and
+// counting it as no agent would let another host's agent on the branch take
+// the binding.
+func (o *Orca) terminals(ctx context.Context) (map[string][]terminal, error) {
 	var resp struct {
 		Terminals []terminal `json:"terminals"`
 		Truncated bool       `json:"truncated"`
@@ -260,13 +380,13 @@ func (o *Orca) agentTerminals(ctx context.Context) (map[string]bool, error) {
 	if resp.Truncated {
 		return nil, errors.New("orca terminal list: list truncated")
 	}
-	named := map[string]bool{}
+	live := map[string][]terminal{}
 	for _, t := range resp.Terminals {
-		if !t.Orphaned && t.AgentIdentity != nil {
-			named[t.WorktreeID] = true
+		if !t.Orphaned {
+			live[t.WorktreeID] = append(live[t.WorktreeID], t)
 		}
 	}
-	return named, nil
+	return live, nil
 }
 
 // workspace takes the branch from Orca, which knows it anyway, and the
@@ -325,6 +445,9 @@ func (o *Orca) poll(ctx context.Context, ev host.Events) {
 	if wasDown {
 		slog.Info("orca is back")
 	}
+	// Before the resync, which reports every badge again: a pane that is
+	// gone must not stay in the worktree's comment.
+	o.pruneBadges(ctx, list)
 	ev.Resync(o.Name(), list)
 	o.ready(rows, ev)
 	o.mu.Lock()
@@ -340,6 +463,11 @@ func (o *Orca) ready(rows []worktree, ev host.Events) {
 	now := map[string]host.AgentState{}
 	for _, w := range rows {
 		now[prefix+w.WorktreeID] = w.state()
+		for _, a := range w.Agents {
+			if validPane(a.PaneKey) {
+				now[paneID(w.WorktreeID, a.PaneKey)] = a.state()
+			}
+		}
 	}
 	o.mu.Lock()
 	prev := o.states
@@ -361,12 +489,13 @@ func (o *Orca) ready(rows []worktree, ev host.Events) {
 	}
 }
 
+// row is the worktree of a workspace, which for a pane is the one it is in.
 func (o *Orca) row(ctx context.Context, ws host.Workspace) (worktree, error) {
 	rows, err := o.list(ctx)
 	if err != nil {
 		return worktree{}, err
 	}
-	id := strings.TrimPrefix(ws.ID, prefix)
+	id := worktreeOf(ws.ID)
 	for _, w := range rows {
 		if w.WorktreeID == id {
 			return w, nil
@@ -380,7 +509,18 @@ func (o *Orca) State(ctx context.Context, ws host.Workspace) (host.AgentState, e
 	if err != nil {
 		return host.Unknown, err
 	}
-	return w.state(), nil
+	_, key := parseID(ws.ID)
+	return w.stateOf(key), nil
+}
+
+// Fallback is the worktree of a pane: when the pane is gone, its watches
+// move there instead of ending. A worktree has none.
+func (o *Orca) Fallback(id string) (string, bool) {
+	wt, key := parseID(id)
+	if key == "" {
+		return "", false
+	}
+	return prefix + wt, true
 }
 
 type terminal struct {
@@ -393,6 +533,18 @@ type terminal struct {
 	AgentIdentity *string `json:"agentIdentity"`
 	LastOutputAt  int64   `json:"lastOutputAt"`
 }
+
+// paneKey is what worktree ps calls the pane of an agent in this terminal.
+func (t terminal) paneKey() string {
+	if t.TabID == "" || t.LeafID == "" {
+		return ""
+	}
+	return t.TabID + ":" + t.LeafID
+}
+
+// usable terminals are attached to a tab and take input. Orphaned ones are
+// left from before Orca restarted.
+func (t terminal) usable() bool { return !t.Orphaned && t.Writable }
 
 type target struct {
 	handle  string // terminal handle; empty for a chat
@@ -408,14 +560,41 @@ type target struct {
 // over one it only recognises by name, which leaves chats and hooked-up
 // terminals on par; then the one active last wins, as that is most likely
 // the agent the person works with.
-func (o *Orca) target(ctx context.Context, w worktree) (target, error) {
+//
+// For a pane the choice is made already: its own chat, or its own terminal,
+// when that is an agent. Never another agent, and never a shell.
+func (o *Orca) target(ctx context.Context, w worktree, paneKey string) (target, error) {
 	var resp struct {
 		Terminals []terminal `json:"terminals"`
 	}
 	if err := o.run(ctx, &resp, "terminal", "list", "--worktree", "id:"+w.WorktreeID); err != nil {
 		return target{}, err
 	}
+	if paneKey != "" {
+		return pickPane(w, paneKey, resp.Terminals)
+	}
 	return pick(w, resp.Terminals)
+}
+
+func pickPane(w worktree, key string, terms []terminal) (target, error) {
+	known := false
+	for _, a := range w.Agents {
+		if a.PaneKey != key {
+			continue
+		}
+		known = true
+		if s, ok := a.session(); ok {
+			return target{session: s, known: true, active: a.UpdatedAt}, nil
+		}
+	}
+	for _, t := range terms {
+		// Only a terminal Orca names an agent in, as in pick: a ps row can
+		// outlive the agent, and its terminal is a shell by then.
+		if t.paneKey() == key && t.usable() && t.AgentIdentity != nil {
+			return target{handle: t.Handle, known: known, active: t.LastOutputAt}, nil
+		}
+	}
+	return target{}, fmt.Errorf("no agent terminal or chat in orca pane %s", key)
 }
 
 func pick(w worktree, terms []terminal) (target, error) {
@@ -428,10 +607,10 @@ func pick(w worktree, terms []terminal) (target, error) {
 		}
 	}
 	for _, t := range terms {
-		if t.Orphaned || !t.Writable || t.AgentIdentity == nil {
+		if !t.usable() || t.AgentIdentity == nil {
 			continue
 		}
-		cands = append(cands, target{handle: t.Handle, known: known[t.TabID+":"+t.LeafID], active: t.LastOutputAt})
+		cands = append(cands, target{handle: t.Handle, known: known[t.paneKey()], active: t.LastOutputAt})
 	}
 	if len(cands) == 0 {
 		return target{}, errors.New("no agent terminal or chat in this worktree")
@@ -452,26 +631,29 @@ func pick(w worktree, terms []terminal) (target, error) {
 // input, where it interleaves with the running turn and its pickup cannot
 // be confirmed; such a delivery waits for the agent to turn idle. An agent
 // Orca has no state for (not hooked up, like a plain shell) gets the TUI
-// idle probe instead.
+// idle probe instead. A pane waits only for its own agent's state; a
+// worktree for all of its agents.
 func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) error {
 	w, err := o.row(ctx, ws)
 	if err != nil {
 		return err
 	}
-	switch w.state() {
+	_, key := parseID(ws.ID)
+	s := w.stateOf(key)
+	switch s {
 	case host.Blocked:
 		return host.ErrBlocked
 	case host.Working:
 		return host.ErrBusy
 	}
-	t, err := o.target(ctx, w)
+	t, err := o.target(ctx, w, key)
 	if err != nil {
 		return err
 	}
 	if t.session != "" {
-		return o.prompt(ctx, w, t.session, text)
+		return o.prompt(ctx, s, t.session, text)
 	}
-	if w.state() == host.Unknown {
+	if s == host.Unknown {
 		err := o.run(ctx, nil, "terminal", "wait", "--terminal", t.handle, "--for", "tui-idle", "--timeout-ms", "1000")
 		if code(err) == "timeout" {
 			return host.ErrBusy
@@ -529,8 +711,8 @@ func (o *Orca) Deliver(ctx context.Context, ws host.Workspace, text string) erro
 // start, names the session or sender unknown, or refuses the sender for
 // an agent session; any other failure may have stored the message, and a
 // retry would post it twice.
-func (o *Orca) prompt(ctx context.Context, w worktree, session, text string) error {
-	if w.state() != host.Idle {
+func (o *Orca) prompt(ctx context.Context, s host.AgentState, session, text string) error {
+	if s != host.Idle {
 		return host.ErrBusy
 	}
 	var resp struct {
@@ -553,16 +735,51 @@ func (o *Orca) prompt(ctx context.Context, w worktree, session, text string) err
 
 // Badge replaces the worktree's comment, the line on its card in Orca's
 // sidebar, and puts back the comment it replaced once there is nothing to
-// show. A comment the person changed meanwhile is theirs and stays.
+// show. A comment the person changed meanwhile is theirs and stays. The
+// comment belongs to the worktree, so it shows what the worktree and all of
+// its panes watch, and a pane's badge is one part of it.
 func (o *Orca) Badge(ctx context.Context, ws host.Workspace, b host.Badge) error {
 	if !o.Comment {
 		return nil
 	}
-	text := b.String()
+	o.mu.Lock()
+	if o.badges == nil {
+		o.badges = map[string]host.Badge{}
+	}
+	if b.String() == "" {
+		delete(o.badges, ws.ID)
+	} else {
+		o.badges[ws.ID] = b
+	}
+	o.mu.Unlock()
+	return o.showComment(ctx, ws)
+}
+
+// union is the badge of a worktree and its panes together: their subjects
+// once each, and their reminders. Call with o.mu held.
+func (o *Orca) union(worktreeID string) host.Badge {
+	var u host.Badge
+	for id, b := range o.badges {
+		if worktreeOf(id) == worktreeID {
+			u.Subjects = append(u.Subjects, b.Subjects...)
+			u.Reminders += b.Reminders
+		}
+	}
+	slices.Sort(u.Subjects)
+	u.Subjects = slices.Compact(u.Subjects)
+	return u
+}
+
+// showComment writes the comment of the worktree of ws from the badges of
+// the worktree and its panes.
+func (o *Orca) showComment(ctx context.Context, ws host.Workspace) error {
+	wt := worktreeOf(ws.ID)
+	id := prefix + wt
 	o.mu.Lock()
 	o.load()
-	r, saved := o.comments[ws.ID]
-	same := saved && o.seen[ws.ID] && r.Written == text
+	text := o.union(wt).String()
+	r, saved := o.comments[id]
+	same := saved && o.seen[id] && r.Written == text
 	o.mu.Unlock()
 	if same || !saved && text == "" {
 		return nil
@@ -573,7 +790,30 @@ func (o *Orca) Badge(ctx context.Context, ws host.Workspace, b host.Badge) error
 	if err != nil {
 		return err
 	}
-	return o.setComment(ctx, ws.ID, w.Comment, text)
+	return o.setComment(ctx, id, w.Comment, text)
+}
+
+// pruneBadges forgets the badges of workspaces that are gone, and shows the
+// comments of the worktrees they were on without them.
+func (o *Orca) pruneBadges(ctx context.Context, list []host.Workspace) {
+	live := map[string]bool{}
+	for _, ws := range list {
+		live[ws.ID] = true
+	}
+	o.mu.Lock()
+	var affected []host.Workspace
+	for id := range o.badges {
+		if !live[id] {
+			delete(o.badges, id)
+			affected = append(affected, host.Workspace{Host: o.Name(), ID: id})
+		}
+	}
+	o.mu.Unlock()
+	for _, ws := range affected {
+		if err := o.showComment(ctx, ws); err != nil {
+			slog.Warn("orca comment not updated", "workspace", ws.ID, "err", err)
+		}
+	}
 }
 
 // setComment shows text as the comment of a worktree whose comment is now
@@ -592,7 +832,7 @@ func (o *Orca) setComment(ctx context.Context, id, current, text string) error {
 		want = cmp.Or(r.Original, " ")
 	}
 	if want != current {
-		if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+strings.TrimPrefix(id, prefix), "--comment", want); err != nil {
+		if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+worktreeOf(id), "--comment", want); err != nil {
 			return err
 		}
 	}
@@ -704,7 +944,7 @@ func (o *Orca) Notify(ctx context.Context, n host.Notification) error {
 	if !n.NeedsYou || n.Workspace.Host != o.Name() {
 		return errors.ErrUnsupported
 	}
-	if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+strings.TrimPrefix(n.Workspace.ID, prefix), "--unread"); err != nil {
+	if err := o.run(ctx, nil, "worktree", "set", "--worktree", "id:"+worktreeOf(n.Workspace.ID), "--unread"); err != nil {
 		return err
 	}
 	return errors.ErrUnsupported
