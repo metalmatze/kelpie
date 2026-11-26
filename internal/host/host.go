@@ -119,12 +119,15 @@ type Host interface {
 	Notify(ctx context.Context, n Notification) error
 }
 
-// Fallback is an optional Host method for hosts whose workspaces nest, like
-// an Orca agent pane in its worktree. It names the workspace that takes
-// over the watches and reminders of workspace id once id is gone, so they
-// move there instead of ending. A host without it ends them.
-type Fallback interface {
-	Fallback(id string) (string, bool)
+// Parent is an optional Host method for hosts whose workspaces nest, like
+// an Orca agent pane in its worktree. It names the workspace that holds
+// workspace id, from the ID alone, so it answers for a workspace the host
+// no longer lists too. The binder keeps a subject bound to a parent or to
+// its children, never both, moves the watches of a child that is gone to
+// its parent instead of ending them, and leaves branch binding to the
+// parent. A host without it has no nesting.
+type Parent interface {
+	Parent(id string) (string, bool)
 }
 
 type Notification struct {

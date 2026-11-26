@@ -2,7 +2,9 @@ package bind
 
 import (
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/metalmatze/kelpie/internal/core"
 	"github.com/metalmatze/kelpie/internal/host"
@@ -242,10 +244,12 @@ func TestProviderBranchBinding(t *testing.T) {
 	}
 }
 
-// An Orca worktree and the panes of its agents share a branch. A pane is no
-// agent workspace, so a branch binding picks the worktree and not nothing.
+// An Orca worktree and the panes of its agents share a branch. A pane is a
+// child of the worktree, so a branch binding picks the worktree and not
+// nothing.
 func TestBranchBindingIgnoresPanes(t *testing.T) {
 	b := New(state.NewMemory(), true)
+	b.Parent = paneParent
 	b.SetWorkspaces("orca", []host.Workspace{
 		{Host: "orca", ID: "orca:r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth", Agent: true},
 		{Host: "orca", ID: "orca:pane:t1:leaf@r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
@@ -257,17 +261,236 @@ func TestBranchBindingIgnoresPanes(t *testing.T) {
 	}
 }
 
-// With no agent detected in the worktree, its panes carry no branch, so the
-// worktree is the one candidate and the event waits there.
+// With no agent detected in the worktree, its panes, which share its
+// branch, are no candidates, so the worktree is the one and the event waits
+// there.
 func TestBranchBindingWorktreeWithoutAgent(t *testing.T) {
 	b := New(state.NewMemory(), true)
+	b.Parent = paneParent
 	b.SetWorkspaces("orca", []host.Workspace{
 		{Host: "orca", ID: "orca:r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
-		{Host: "orca", ID: "orca:pane:t1:leaf@r::/src"},
-		{Host: "orca", ID: "orca:pane:t2:leaf@r::/src"},
+		{Host: "orca", ID: "orca:pane:t1:leaf@r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
+		{Host: "orca", ID: "orca:pane:t2:leaf@r::/src", Repos: []string{"acme/api"}, Branch: "fix-auth"},
 	})
 	pr := core.Event{Subject: "github:acme/api#421", Bind: map[string]string{"repo": "acme/api", "head_repo": "acme/api", "branch": "fix-auth"}}
 	if got := b.Resolve(pr); len(got) != 1 || got[0].Workspace.ID != "orca:r::/src" {
 		t.Fatalf("Resolve = %+v; want the worktree", got)
+	}
+}
+
+// paneParent nests workspaces like Orca: the parent of
+// "orca:pane:<key>@<worktree>" is "orca:<worktree>".
+func paneParent(id string) (string, bool) {
+	rest, ok := strings.CutPrefix(id, "orca:pane:")
+	if !ok {
+		return "", false
+	}
+	_, wt, ok := strings.Cut(rest, "@")
+	return "orca:" + wt, ok
+}
+
+const (
+	paneWT = "orca:r::/src"
+	paneA  = "orca:pane:t1:leaf@r::/src"
+	paneB  = "orca:pane:t2:leaf@r::/src"
+)
+
+// paneBinder knows worktree paneWT and the listed panes of it.
+func paneBinder(panes ...string) *Binder {
+	b := New(state.NewMemory(), false)
+	b.Parent = paneParent
+	list := []host.Workspace{{Host: "orca", ID: paneWT, Agent: true}}
+	for _, p := range panes {
+		list = append(list, host.Workspace{Host: "orca", ID: p})
+	}
+	b.SetWorkspaces("orca", list)
+	return b
+}
+
+func workspacesOf(b *Binder, s core.Subject) []string {
+	var out []string
+	for _, bd := range b.Bindings(s) {
+		out = append(out, bd.Workspace)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// A pane replaces its worktree's binding and keeps its time; the worktree
+// leaves a subject its pane watches to the pane, and binds one no pane
+// watches itself.
+func TestWatchKeepsParentOrChildren(t *testing.T) {
+	b := paneBinder(paneA)
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneWT, Via: "branch", Since: since})
+
+	if got := b.Watch("rel:acme", paneA); got != paneA {
+		t.Errorf("Watch from the pane bound %s; want the pane", got)
+	}
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneA}) {
+		t.Errorf("watch is on %v; want the pane alone", got)
+	}
+	if bd, _ := b.Binding("rel:acme", paneA); !bd.Since.Equal(since) || bd.Via != "explicit" {
+		t.Errorf("binding = %+v; want explicit since the worktree's %v", bd, since)
+	}
+
+	if got := b.Watch("rel:acme", paneWT); got != paneA {
+		t.Errorf("Watch from the worktree bound %s; want the pane that watches it", got)
+	}
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneA}) {
+		t.Errorf("watch is on %v; want the pane alone", got)
+	}
+
+	if got := b.Watch("rel:other", paneWT); got != paneWT {
+		t.Errorf("Watch from the worktree bound %s; want the worktree", got)
+	}
+}
+
+func TestUnwatchFromPaneEndsWorktreeBinding(t *testing.T) {
+	b := paneBinder(paneA)
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneWT, Via: "explicit", Since: time.Now()})
+	if got, err := b.Unwatch("rel:acme", paneA); err != nil || got != paneWT {
+		t.Fatalf("Unwatch = %s, %v; want the worktree's binding", got, err)
+	}
+	if got := workspacesOf(b, "rel:acme"); len(got) != 0 {
+		t.Errorf("watch is on %v; want it ended", got)
+	}
+	if _, err := b.Unwatch("rel:acme", paneA); err == nil {
+		t.Error("unwatch with nothing watching succeeded")
+	}
+}
+
+// Unwatch from the worktree, like one typed in a shell tab, ends the watch
+// of the one pane that holds it, the one watch from there named; with two
+// panes holding it, it names them and ends neither.
+func TestUnwatchFromWorktreeEndsPaneBinding(t *testing.T) {
+	b := paneBinder(paneA)
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
+	if got, err := b.Unwatch("rel:acme", paneWT); err != nil || got != paneA {
+		t.Fatalf("Unwatch = %s, %v; want the pane's binding", got, err)
+	}
+	if got := workspacesOf(b, "rel:acme"); len(got) != 0 {
+		t.Errorf("watch is on %v; want it ended", got)
+	}
+	if _, err := b.Unwatch("rel:acme", paneWT); err == nil {
+		t.Error("unwatch with nothing watching succeeded")
+	}
+
+	b = paneBinder(paneA, paneB)
+	for _, p := range []string{paneA, paneB} {
+		b.Bind(core.Binding{Subject: "rel:acme", Workspace: p, Via: "explicit", Since: time.Now()})
+	}
+	_, err := b.Unwatch("rel:acme", paneWT)
+	if err == nil || !strings.Contains(err.Error(), paneA) || !strings.Contains(err.Error(), paneB) {
+		t.Errorf("unwatch with two panes watching = %v; want an error naming both", err)
+	}
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneA, paneB}) {
+		t.Errorf("watch is on %v; want both panes kept", got)
+	}
+}
+
+// A pane that is gone hands its bindings to its worktree, keeping their
+// time; with the worktree gone too they end, and another host's stay.
+func TestSetWorkspacesFallsBackToParent(t *testing.T) {
+	b := paneBinder(paneA)
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: since})
+	b.Bind(core.Binding{Subject: "rel:other", Workspace: "w1:p1", Via: "explicit"})
+
+	b.SetWorkspaces("orca", []host.Workspace{{Host: "orca", ID: paneWT}})
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneWT}) {
+		t.Fatalf("watch of the gone pane is on %v; want its worktree", got)
+	}
+	if bd, _ := b.Binding("rel:acme", paneWT); !bd.Since.Equal(since) {
+		t.Errorf("moved binding since %v; want %v", bd.Since, since)
+	}
+
+	b.SetWorkspaces("orca", nil)
+	if got := workspacesOf(b, "rel:acme"); len(got) != 0 {
+		t.Errorf("watch is on %v; want it ended", got)
+	}
+	if got := workspacesOf(b, "rel:other"); !slices.Equal(got, []string{"w1:p1"}) {
+		t.Errorf("other host's watch is on %v; want it untouched", got)
+	}
+}
+
+// When a pane closes and a sibling pane of its worktree watches the same
+// subject, the closed pane's watch ends instead of moving: the worktree
+// would deliver every update a second time.
+func TestSetWorkspacesFallBackSkipsWatchedSibling(t *testing.T) {
+	b := paneBinder(paneA, paneB)
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneB, Via: "explicit", Since: time.Now()})
+	b.Bind(core.Binding{Subject: "rel:solo", Workspace: paneA, Via: "explicit", Since: time.Now()})
+
+	b.SetWorkspaces("orca", []host.Workspace{{Host: "orca", ID: paneWT}, {Host: "orca", ID: paneB}}) // paneA closed
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneB}) {
+		t.Errorf("shared watch is on %v; want the sibling alone", got)
+	}
+	if got := workspacesOf(b, "rel:solo"); !slices.Equal(got, []string{paneWT}) {
+		t.Errorf("sole watch is on %v; want the worktree", got)
+	}
+}
+
+// A pushed close, like Remove from herdr or Rex, falls back the same way as
+// a resync: a sole watch moves to the worktree, one a sibling pane watches
+// ends, and a workspace without a parent loses its watches.
+func TestRemoveFallsBackToParent(t *testing.T) {
+	b := paneBinder(paneA, paneB)
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	b.Bind(core.Binding{Subject: "rel:solo", Workspace: paneA, Via: "explicit", Since: since})
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneB, Via: "explicit", Since: time.Now()})
+
+	b.Remove(paneA)
+	if got := workspacesOf(b, "rel:solo"); !slices.Equal(got, []string{paneWT}) {
+		t.Errorf("sole watch is on %v; want the worktree", got)
+	}
+	if bd, _ := b.Binding("rel:solo", paneWT); !bd.Since.Equal(since) {
+		t.Errorf("moved binding since %v; want %v", bd.Since, since)
+	}
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneB}) {
+		t.Errorf("shared watch is on %v; want the sibling alone", got)
+	}
+
+	b.Remove(paneWT)
+	if got := workspacesOf(b, "rel:solo"); len(got) != 0 {
+		t.Errorf("watch of the removed worktree is on %v; want it ended", got)
+	}
+}
+
+// The heir of a pane that is not listed is its listed worktree; a listed
+// pane, a pane of an unlisted worktree, and a worktree have none.
+func TestHeir(t *testing.T) {
+	b := paneBinder(paneA)
+	if ws, ok := b.Heir(paneB); !ok || ws.ID != paneWT {
+		t.Errorf("Heir(unlisted pane) = %q, %v; want %s", ws.ID, ok, paneWT)
+	}
+	for _, id := range []string{paneA, "orca:pane:t9:leaf@r::/nowhere", "orca:r::/nowhere", paneWT} {
+		if ws, ok := b.Heir(id); ok {
+			t.Errorf("Heir(%s) = %s; want none", id, ws.ID)
+		}
+	}
+}
+
+// Without Parent, no workspace nests: a host other than Orca behaves as
+// before, and Watch and Unwatch act on the workspace given.
+func TestNoParent(t *testing.T) {
+	b := New(state.NewMemory(), false)
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}, {Host: "herdr", ID: "w1:p2"}})
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: "w1:p2", Via: "explicit", Since: time.Now()})
+	if got := b.Watch("rel:acme", "w1:p1"); got != "w1:p1" {
+		t.Errorf("Watch bound %s; want w1:p1", got)
+	}
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{"w1:p1", "w1:p2"}) {
+		t.Errorf("watch is on %v; want both panes", got)
+	}
+	if _, err := b.Unwatch("rel:other", "w1:p1"); err == nil {
+		t.Error("unwatch with nothing watching succeeded")
+	}
+	b.SetWorkspaces("herdr", []host.Workspace{{Host: "herdr", ID: "w1:p1"}})
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{"w1:p1"}) {
+		t.Errorf("watch is on %v; want the closed pane's ended", got)
 	}
 }
