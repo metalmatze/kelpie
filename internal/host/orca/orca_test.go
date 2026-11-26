@@ -251,8 +251,8 @@ func TestWorkspacesPanes(t *testing.T) {
 		if !ok || ws.Agent != agent {
 			t.Errorf("%s: Agent = %v; want %v (listed: %v)", ws.ID, ws.Agent, agent, ok)
 		}
-		if strings.HasPrefix(ws.ID, panePrefix) && (ws.Branch != "" || ws.Repos != nil) {
-			t.Errorf("%s: branch %q, repos %v; want none, so branch binding sees the worktree alone", ws.ID, ws.Branch, ws.Repos)
+		if strings.HasSuffix(ws.ID, "@r::/src") && ws.Branch != "feat" {
+			t.Errorf("%s: branch %q; want its worktree's", ws.ID, ws.Branch)
 		}
 		if strings.HasSuffix(ws.ID, "@r::/src") && ws.Path != "/src" {
 			t.Errorf("%s: path %q; want its worktree's", ws.ID, ws.Path)
@@ -543,13 +543,13 @@ func TestNotifyPane(t *testing.T) {
 	}
 }
 
-func TestFallback(t *testing.T) {
+func TestParent(t *testing.T) {
 	o := &Orca{}
-	if to, ok := o.Fallback(paneID("r::/src/a@b", "t1:leaf")); !ok || to != "orca:r::/src/a@b" {
-		t.Errorf("Fallback(pane) = %q, %v; want its worktree", to, ok)
+	if to, ok := o.Parent(paneID("r::/src/a@b", "t1:leaf")); !ok || to != "orca:r::/src/a@b" {
+		t.Errorf("Parent(pane) = %q, %v; want its worktree", to, ok)
 	}
-	if to, ok := o.Fallback("orca:r::/src"); ok {
-		t.Errorf("Fallback(worktree) = %q, true; want none", to)
+	if to, ok := o.Parent("orca:r::/src"); ok {
+		t.Errorf("Parent(worktree) = %q, true; want none", to)
 	}
 }
 

@@ -345,7 +345,7 @@ esac
 }
 
 // paneHost is a host whose workspaces nest, like Orca's agent panes in a
-// worktree: "orca:pane:<key>@<worktree>" falls back to "orca:<worktree>".
+// worktree: the parent of "orca:pane:<key>@<worktree>" is "orca:<worktree>".
 type paneHost struct{ list []host.Workspace }
 
 func (*paneHost) Name() string { return "orca" }
@@ -361,7 +361,7 @@ func (*paneHost) Badge(context.Context, host.Workspace, host.Badge) error {
 	return nil
 }
 func (*paneHost) Notify(context.Context, host.Notification) error { return errors.ErrUnsupported }
-func (*paneHost) Fallback(id string) (string, bool) {
+func (*paneHost) Parent(id string) (string, bool) {
 	rest, ok := strings.CutPrefix(id, "orca:pane:")
 	if !ok {
 		return "", false
@@ -388,6 +388,7 @@ func paneDaemon(t *testing.T) (*daemon, *paneHost) {
 	ph := &paneHost{list: []host.Workspace{{Host: "orca", ID: paneWT, Path: "/src", Agent: true}, {Host: "orca", ID: paneA, Path: "/src"}}}
 	st := state.NewMemory()
 	d := &daemon{ctx: ctx, runners: map[string]*runner{}, lastSeen: map[string]string{}, badges: map[core.Subject]string{}, shown: map[string]string{}, binder: bind.New(st, false), hosts: []host.Host{ph}}
+	d.binder.Parent = d.parent
 	var err error
 	if d.sched, err = schedule.New(filepath.Join(dir, "reminders.json"), 0, func(core.Reminder, time.Duration) {}); err != nil {
 		t.Fatal(err)
@@ -502,53 +503,6 @@ func TestWatchFromWorktreeDefersToPane(t *testing.T) {
 	}
 }
 
-func TestUnwatchFromPaneEndsWorktreeBinding(t *testing.T) {
-	d, _ := paneDaemon(t)
-	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneWT, Via: "explicit", Since: time.Now()})
-	req := control.WatchRequest{Subject: "rel:acme", Workspace: paneA}
-	if err := d.Unwatch(t.Context(), req); err != nil {
-		t.Fatal(err)
-	}
-	if got := workspacesOf(d, "rel:acme"); len(got) != 0 {
-		t.Errorf("watch is on %v; want it ended", got)
-	}
-	if err := d.Unwatch(t.Context(), req); err == nil {
-		t.Error("unwatch with nothing watching succeeded")
-	}
-}
-
-// Unwatch from the worktree, like one typed in a shell tab, ends the watch
-// of the one pane that holds it, the one watch from there named; with two
-// panes holding it, it names them and ends neither.
-func TestUnwatchFromWorktreeEndsPaneBinding(t *testing.T) {
-	d, ph := paneDaemon(t)
-	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
-	req := control.WatchRequest{Subject: "rel:acme", Workspace: paneWT}
-	if err := d.Unwatch(t.Context(), req); err != nil {
-		t.Fatal(err)
-	}
-	if got := workspacesOf(d, "rel:acme"); len(got) != 0 {
-		t.Errorf("watch is on %v; want it ended", got)
-	}
-	if err := d.Unwatch(t.Context(), req); err == nil {
-		t.Error("unwatch with nothing watching succeeded")
-	}
-
-	const paneB = "orca:pane:t2:leaf@r::/src"
-	ph.list = append(ph.list, host.Workspace{Host: "orca", ID: paneB, Path: "/src"})
-	d.Resync("orca", ph.list)
-	for _, p := range []string{paneA, paneB} {
-		d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: p, Via: "explicit", Since: time.Now()})
-	}
-	err := d.Unwatch(t.Context(), req)
-	if err == nil || !strings.Contains(err.Error(), paneA) || !strings.Contains(err.Error(), paneB) {
-		t.Errorf("unwatch with two panes watching = %v; want an error naming both", err)
-	}
-	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{paneA, paneB}) {
-		t.Errorf("watch is on %v; want both panes kept", got)
-	}
-}
-
 // A pane the host does not list, like an Orca terminal without a tab, takes
 // the worktree it is in.
 func TestWorkspaceUnlistedPaneUsesWorktree(t *testing.T) {
@@ -562,26 +516,5 @@ func TestWorkspaceUnlistedPaneUsesWorktree(t *testing.T) {
 	}
 	if _, err := d.workspace("orca:r::/nowhere"); err == nil {
 		t.Error("an unlisted worktree resolved")
-	}
-}
-
-// When a pane closes and a sibling pane of its worktree watches the same
-// subject, the closed pane's watch ends instead of moving: the worktree
-// would deliver every update a second time.
-func TestResyncPaneFallbackSkipsWatchedSibling(t *testing.T) {
-	d, ph := paneDaemon(t)
-	sibling := host.Workspace{Host: "orca", ID: "orca:pane:t2:leaf@r::/src", Path: "/src"}
-	ph.list = append(ph.list, sibling)
-	d.Resync("orca", ph.list)
-	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
-	d.binder.Bind(core.Binding{Subject: "rel:acme", Workspace: sibling.ID, Via: "explicit", Since: time.Now()})
-	d.binder.Bind(core.Binding{Subject: "rel:solo", Workspace: paneA, Via: "explicit", Since: time.Now()})
-
-	d.Resync("orca", []host.Workspace{ph.list[0], sibling}) // paneA closed
-	if got := workspacesOf(d, "rel:acme"); !slices.Equal(got, []string{sibling.ID}) {
-		t.Errorf("shared watch is on %v; want the sibling alone", got)
-	}
-	if got := workspacesOf(d, "rel:solo"); !slices.Equal(got, []string{paneWT}) {
-		t.Errorf("sole watch is on %v; want the worktree", got)
 	}
 }

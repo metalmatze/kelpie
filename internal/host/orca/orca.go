@@ -30,9 +30,12 @@ import (
 // pane. It lets a watch made by one of several agents in a worktree reach
 // that agent alone, and wait only for its state. The pane key comes
 // first because it never holds an "@", while a worktree path may. A pane
-// key, unlike a handle, is not issued per runtime, but whether it outlives
-// an Orca restart is not known, so a watch whose pane is gone falls back to
-// its worktree (see Fallback).
+// key, unlike a handle, outlives an Orca restart: the terminals run on in
+// Orca's own daemon, and the app gives each its old tabId:leafId back when
+// it reattaches it. But it reattaches a worktree's terminals only once that
+// worktree is opened, and until then lists them as orphaned, with no pane.
+// So a watch whose pane is gone falls back to its worktree, its parent (see
+// Parent), and stays there when the pane comes back.
 const (
 	prefix     = "orca:"
 	panePrefix = prefix + "pane:"
@@ -295,10 +298,10 @@ func (o *Orca) list(ctx context.Context) ([]worktree, error) {
 // Workspaces are all worktrees, not only those running an agent, so a
 // watch survives the agent restarting, and every pane of them, shell or
 // agent, so a watch can belong to one agent of several in a worktree, and
-// lives as long as its pane. A pane workspace is no agent workspace: an
-// event that binds by branch must pick the worktree, which a pane would
-// otherwise share the branch with. A runtime that is not ready fails
-// instead of listing nothing, which would end every Orca watch.
+// lives as long as its pane. A pane is a child of its worktree (see
+// Parent), so an event that binds by branch picks the worktree, whose
+// branch the pane shares. A runtime that is not ready fails instead of
+// listing nothing, which would end every Orca watch.
 func (o *Orca) Workspaces(ctx context.Context) ([]host.Workspace, error) {
 	list, _, err := o.workspaces(ctx)
 	return list, err
@@ -332,12 +335,8 @@ func (o *Orca) workspaces(ctx context.Context) ([]host.Workspace, []worktree, er
 		ws := o.workspace(ctx, w, named)
 		out = append(out, ws)
 		for _, k := range panes(w, terms[w.WorktreeID]) {
-			// A pane has no branch or repos of its own: only branch
-			// binding reads them, and it must see the worktree alone, or a
-			// worktree with no agent detected and a shell pane would be
-			// two ambiguous candidates and drop the event.
 			pane := ws
-			pane.ID, pane.Agent, pane.Branch, pane.Repos = paneID(w.WorktreeID, k), false, "", nil
+			pane.ID, pane.Agent = paneID(w.WorktreeID, k), false
 			out = append(out, pane)
 		}
 	}
@@ -513,9 +512,11 @@ func (o *Orca) State(ctx context.Context, ws host.Workspace) (host.AgentState, e
 	return w.stateOf(key), nil
 }
 
-// Fallback is the worktree of a pane: when the pane is gone, its watches
-// move there instead of ending. A worktree has none.
-func (o *Orca) Fallback(id string) (string, bool) {
+// Parent is the worktree of a pane. A subject is bound to a worktree or to
+// its panes, never both; when the pane is gone, its watches and reminders
+// move to the worktree instead of ending; branch binding picks the
+// worktree. A worktree has none.
+func (o *Orca) Parent(id string) (string, bool) {
 	wt, key := parseID(id)
 	if key == "" {
 		return "", false
