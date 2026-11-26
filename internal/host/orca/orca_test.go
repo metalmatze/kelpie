@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/metalmatze/kelpie/internal/host"
 )
@@ -228,6 +229,7 @@ func TestWorkspacesPanes(t *testing.T) {
 			`{"handle":"h4","worktreeId":"r::/src","tabId":"t4","leafId":"leaf","orphaned":true,"agentIdentity":"claude"},`+
 			`{"handle":"h5","worktreeId":"r::/shell","tabId":"t5","leafId":"leaf","writable":true,"agentIdentity":null}`,
 		"")
+	o.repos = map[string]cachedRepos{"/src": {repos: []string{"acme/api"}, at: time.Now()}}
 	list, err := o.Workspaces(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -251,8 +253,8 @@ func TestWorkspacesPanes(t *testing.T) {
 		if !ok || ws.Agent != agent {
 			t.Errorf("%s: Agent = %v; want %v (listed: %v)", ws.ID, ws.Agent, agent, ok)
 		}
-		if strings.HasSuffix(ws.ID, "@r::/src") && ws.Branch != "feat" {
-			t.Errorf("%s: branch %q; want its worktree's", ws.ID, ws.Branch)
+		if strings.HasSuffix(ws.ID, "@r::/src") && (ws.Branch != "feat" || !slices.Equal(ws.Repos, []string{"acme/api"})) {
+			t.Errorf("%s: branch %q, repos %v; want its worktree's", ws.ID, ws.Branch, ws.Repos)
 		}
 		if strings.HasSuffix(ws.ID, "@r::/src") && ws.Path != "/src" {
 			t.Errorf("%s: path %q; want its worktree's", ws.ID, ws.Path)

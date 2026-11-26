@@ -673,7 +673,7 @@ func (d *daemon) Resync(hostName string, list []host.Workspace) {
 }
 
 // fallBack moves the reminders of the workspaces of hostName that are gone
-// to their parent, when that is listed, the way SetWorkspaces moves their
+// to their parent, when that is listed, the way the binder moves their
 // watches, before Prune would end them.
 func (d *daemon) fallBack(hostName string) {
 	gone := map[string]bool{}
@@ -711,6 +711,7 @@ func (d *daemon) Upsert(ws host.Workspace) {
 
 func (d *daemon) Remove(hostName, id string) {
 	d.binder.Remove(id)
+	d.fallBack(hostName)
 	d.sched.Prune(d.alive(hostName))
 	slog.Info("pane closed", "id", id)
 }

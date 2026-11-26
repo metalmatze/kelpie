@@ -87,12 +87,14 @@ func (b *Binder) Upsert(ws host.Workspace) (prev host.Workspace, existed bool) {
 	return prev, existed
 }
 
-// Remove forgets a closed workspace and ends its bindings. Other workspaces
-// watching the same subjects keep theirs.
+// Remove forgets a closed workspace and ends its bindings, except that
+// those of a child whose parent is listed move to the parent, as in
+// SetWorkspaces. Other workspaces watching the same subjects keep theirs.
 func (b *Binder) Remove(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.workspaces, id)
+	b.fallBackFrom(id)
 	for _, bd := range b.state.AllBindings() {
 		if bd.Workspace == id {
 			slog.Info("unbind: workspace closed", "subject", bd.Subject, "workspace", id)
@@ -115,25 +117,32 @@ func (b *Binder) fallBack(hostName string) {
 		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(gone)) {
-		to, ok := b.heir(id)
-		if !ok {
+		b.fallBackFrom(id)
+	}
+}
+
+// fallBackFrom moves the bindings of gone workspace id to its listed
+// parent, if it has one, but ends those a listed sibling with the same
+// parent watches. Called with b.mu held.
+func (b *Binder) fallBackFrom(id string) {
+	to, ok := b.heir(id)
+	if !ok {
+		return
+	}
+	for _, bd := range b.state.AllBindings() {
+		if bd.Workspace != id {
 			continue
 		}
-		for _, bd := range b.state.AllBindings() {
-			if bd.Workspace != id {
-				continue
-			}
-			if sibling, ok := b.siblingWatching(bd.Subject, id, to.ID); ok {
-				b.state.DeleteBinding(bd.Subject, id)
-				slog.Info("watch ends with its pane: a sibling watches it", "subject", bd.Subject, "from", id, "sibling", sibling)
-				continue
-			}
-			moved := bd
-			moved.Workspace = to.ID
-			b.state.SetBinding(moved)
+		if sibling, ok := b.siblingWatching(bd.Subject, id, to.ID); ok {
 			b.state.DeleteBinding(bd.Subject, id)
+			slog.Info("watch ends with its pane: a sibling watches it", "subject", bd.Subject, "from", id, "sibling", sibling)
+			continue
 		}
-		slog.Info("watch falls back", "from", id, "to", to.ID)
+		moved := bd
+		moved.Workspace = to.ID
+		b.state.SetBinding(moved)
+		b.state.DeleteBinding(bd.Subject, id)
+		slog.Info("watch falls back", "subject", bd.Subject, "from", id, "to", to.ID)
 	}
 }
 

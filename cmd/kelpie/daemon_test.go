@@ -451,6 +451,19 @@ func TestResyncPaneFallback(t *testing.T) {
 	}
 }
 
+// A pane its host reports closed hands its reminders to its worktree, as on
+// a resync.
+func TestRemovePaneFallback(t *testing.T) {
+	d, _ := paneDaemon(t)
+	if _, err := d.sched.Add(core.Reminder{Workspace: paneA, Text: "look", Due: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	d.Remove("orca", paneA)
+	if rs := d.sched.List(paneWT); len(rs) != 1 || len(d.sched.List(paneA)) != 0 {
+		t.Errorf("reminders on the worktree = %v; want the pane's", rs)
+	}
+}
+
 // A pane that is not in the worktree's watch list yet replaces the
 // worktree's watch of the subject, so that one update is delivered once.
 func TestWatchFromPaneTakesOverWorktree(t *testing.T) {

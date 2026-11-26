@@ -433,6 +433,33 @@ func TestSetWorkspacesFallBackSkipsWatchedSibling(t *testing.T) {
 	}
 }
 
+// A pushed close, like Remove from herdr or Rex, falls back the same way as
+// a resync: a sole watch moves to the worktree, one a sibling pane watches
+// ends, and a workspace without a parent loses its watches.
+func TestRemoveFallsBackToParent(t *testing.T) {
+	b := paneBinder(paneA, paneB)
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	b.Bind(core.Binding{Subject: "rel:solo", Workspace: paneA, Via: "explicit", Since: since})
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneA, Via: "explicit", Since: time.Now()})
+	b.Bind(core.Binding{Subject: "rel:acme", Workspace: paneB, Via: "explicit", Since: time.Now()})
+
+	b.Remove(paneA)
+	if got := workspacesOf(b, "rel:solo"); !slices.Equal(got, []string{paneWT}) {
+		t.Errorf("sole watch is on %v; want the worktree", got)
+	}
+	if bd, _ := b.Binding("rel:solo", paneWT); !bd.Since.Equal(since) {
+		t.Errorf("moved binding since %v; want %v", bd.Since, since)
+	}
+	if got := workspacesOf(b, "rel:acme"); !slices.Equal(got, []string{paneB}) {
+		t.Errorf("shared watch is on %v; want the sibling alone", got)
+	}
+
+	b.Remove(paneWT)
+	if got := workspacesOf(b, "rel:solo"); len(got) != 0 {
+		t.Errorf("watch of the removed worktree is on %v; want it ended", got)
+	}
+}
+
 // The heir of a pane that is not listed is its listed worktree; a listed
 // pane, a pane of an unlisted worktree, and a worktree have none.
 func TestHeir(t *testing.T) {
